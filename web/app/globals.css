@@ -1,0 +1,90 @@
+:root {
+  --bg0: #f8f4ec;
+  --bg1: #efe3d4;
+  --ink: #1a1a1a;
+  --accent: #b13a1f;
+  --card: rgba(255, 255, 255, 0.85);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(1100px 600px at 90% -10%, #f7c58f 0%, transparent 60%),
+    radial-gradient(900px 500px at -5% 100%, #d9e8c8 0%, transparent 60%),
+    linear-gradient(160deg, var(--bg0), var(--bg1));
+  min-height: 100vh;
+  font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif;
+}
+
+.page {
+  width: min(1080px, 94vw);
+  margin: 20px auto 48px;
+  display: grid;
+  gap: 14px;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+h1, h2 {
+  margin: 0 0 8px;
+}
+
+p {
+  margin: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+input,
+button {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  background: #fff;
+  padding: 10px;
+}
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #9d9d9d;
+  cursor: not-allowed;
+}
+
+pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.svg {
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px dashed rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
