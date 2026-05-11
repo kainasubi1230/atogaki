@@ -2,6 +2,7 @@ from datetime import datetime
 import uuid
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -35,6 +36,16 @@ from .tasks import run_preprocess_job, run_train_lora_job
 WATERMARK_TEXT = "AI生成（アクセシビリティ支援）"
 
 app = FastAPI(title="Accessibility Handwriting MVP")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
