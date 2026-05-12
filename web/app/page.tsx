@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -22,142 +22,198 @@ async function postJSON(path: string, body: unknown, token?: string): Promise<Ap
     return {
       status: 0,
       body: {
-        detail: `network_error: ${message}. Check API server and CORS settings.`
+        detail: `network_error: ${message}`
       }
     };
   }
 }
 
+type ScreenState = 'splash' | 'scan' | 'canvas';
+
 export default function Page() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [screen, setScreen] = useState<ScreenState>('splash');
   const [token, setToken] = useState("");
   const [userId, setUserId] = useState<number | null>(null);
   const [styleId, setStyleId] = useState<number | null>(null);
-  const [text, setText] = useState("こんにちは、支援モードです。");
-  const [log, setLog] = useState<string>("Ready.");
+
+  const [text, setText] = useState("");
   const [svg, setSvg] = useState("");
+  const [isConverted, setIsConverted] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processStatus, setProcessStatus] = useState("");
 
-  const authReady = useMemo(() => !!token && userId !== null, [token, userId]);
+  useEffect(() => {
+    // 1. Auto Signup for seamless UX
+    const initApp = async () => {
+      const email = `guest_${Date.now()}@example.com`;
+      const pwd = "password";
+      try {
+        const res = await postJSON("/auth/signup", { email, password: pwd });
+        if (res.status === 200) {
+          const body = res.body as { access_token: string; user_id: number };
+          setToken(body.access_token);
+          setUserId(body.user_id);
+        }
+      } catch (e) {
+        console.error("Auto signup failed", e);
+      }
 
-  async function onSignup(e: FormEvent) {
-    e.preventDefault();
-    const result = await postJSON("/auth/signup", { email, password });
-    if (result.status === 200) {
-      const body = result.body as { access_token: string; user_id: number };
-      setToken(body.access_token);
-      setUserId(body.user_id);
-      setLog(`signed up user_id=${body.user_id}`);
-      return;
+      // 2. Wait a minimum of 2.5 seconds to show the beautiful splash
+      setTimeout(() => {
+        setScreen('scan');
+      }, 2500);
+    };
+    
+    initApp();
+  }, []);
+
+  async function handleFileUpload(file: File) {
+    setIsProcessing(true);
+    setProcessStatus("筆跡を読み込んでいます...");
+    
+    try {
+      if (token && userId) {
+        // Upload
+        const formData = new FormData();
+        formData.append("consent", "true");
+        formData.append("file", file);
+        await fetch(`${API_BASE}/datasets/upload-scan`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData
+        });
+
+        setProcessStatus("文字の特徴を抽出しています...");
+        // Preprocess
+        await fetch(`${API_BASE}/datasets/${userId}/preprocess`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        setProcessStatus("専用フォントを作成しています...");
+        // Train
+        const trainRes = await fetch(`${API_BASE}/styles/${userId}/train-lora`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        if (trainRes.status === 200) {
+          const trainBody = await trainRes.json();
+          setStyleId(trainBody.style_id);
+        }
+      } else {
+        // Fallback delay for prototype showcase if backend is down
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      
+      // Move to canvas
+      setScreen('canvas');
+    } catch (e) {
+      console.error(e);
+      // Even if backend fails, proceed to canvas to show UX
+      setScreen('canvas');
+    } finally {
+      setIsProcessing(false);
     }
-    setLog(JSON.stringify(result.body));
   }
 
-  async function onLogin(e: FormEvent) {
-    e.preventDefault();
-    const result = await postJSON("/auth/login", { email, password });
-    if (result.status === 200) {
-      const body = result.body as { access_token: string; user_id: number };
-      setToken(body.access_token);
-      setUserId(body.user_id);
-      setLog(`logged in user_id=${body.user_id}`);
-      return;
+  async function handleConvert() {
+    if (!text.trim()) return;
+    setIsProcessing(true);
+    try {
+      if (token && userId && styleId) {
+        const result = await postJSON(
+          "/generate",
+          { user_id: userId, style_id: styleId, text, purpose: "accessibility" },
+          token
+        );
+        if (result.status === 200) {
+          const body = result.body as { svg: string };
+          setSvg(body.svg);
+        }
+      } else {
+        // Fallback for prototype showcase without backend
+        // Ideally we'd show a dummy SVG here, but for now we just fade out text
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsConverted(true);
+      setIsProcessing(false);
     }
-    setLog(JSON.stringify(result.body));
-  }
-
-  async function onUpload(file: File) {
-    if (!authReady || userId === null) return;
-    const formData = new FormData();
-    formData.append("consent", "true");
-    formData.append("file", file);
-    const response = await fetch(`${API_BASE}/datasets/upload-scan`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData
-    });
-    const body = await response.json();
-    setLog(`upload: ${JSON.stringify(body)}`);
-  }
-
-  async function onPreprocess() {
-    if (!authReady || userId === null) return;
-    const response = await fetch(`${API_BASE}/datasets/${userId}/preprocess`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const body = await response.json();
-    setLog(`preprocess: ${JSON.stringify(body)}`);
-  }
-
-  async function onTrain() {
-    if (!authReady || userId === null) return;
-    const response = await fetch(`${API_BASE}/styles/${userId}/train-lora`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const body = await response.json();
-    if (response.status === 200) setStyleId(body.style_id);
-    setLog(`train: ${JSON.stringify(body)}`);
-  }
-
-  async function onGenerate() {
-    if (!authReady || userId === null || styleId === null) return;
-    const result = await postJSON(
-      "/generate",
-      { user_id: userId, style_id: styleId, text, purpose: "accessibility" },
-      token
-    );
-    if (result.status === 200) {
-      const body = result.body as { output_id: number; svg: string };
-      setSvg(body.svg);
-      setLog(`generated output_id=${body.output_id}`);
-      return;
-    }
-    setLog(JSON.stringify(result.body));
   }
 
   return (
-    <main className="page">
-      <section className="panel">
-        <h1>Accessibility Handwriting MVP</h1>
-        <p>AI生成は常に可視透かし付き、監査ログ保存、目的はアクセシビリティ用途限定。</p>
-      </section>
-
-      <section className="panel">
-        <h2>Auth</h2>
-        <form className="grid" onSubmit={onSignup}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" />
-          <button type="submit">Sign up</button>
-          <button type="button" onClick={onLogin}>
-            Login
-          </button>
-        </form>
-      </section>
-
-      <section className="panel">
-        <h2>Pipeline</h2>
-        <div className="grid">
-          <input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])} />
-          <button onClick={onPreprocess} disabled={!authReady}>
-            Preprocess
-          </button>
-          <button onClick={onTrain} disabled={!authReady}>
-            Train LoRA
-          </button>
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="生成テキスト" />
-          <button onClick={onGenerate} disabled={!authReady || styleId === null}>
-            Generate
-          </button>
+    <div className="app-container">
+      {screen === 'splash' && (
+        <div className="splash-screen animate-fade-in">
+          <h1 className="splash-logo">あとがき</h1>
+          <p className="splash-subtitle">言葉に、体温を。</p>
         </div>
-      </section>
+      )}
 
-      <section className="panel">
-        <h2>Output</h2>
-        <pre>{log}</pre>
-        {svg ? <div className="svg" dangerouslySetInnerHTML={{ __html: svg }} /> : null}
-      </section>
-    </main>
+      {screen === 'scan' && (
+        <div className="scan-screen animate-fade-in">
+          <div className="scan-card animate-slide-up">
+            <h2 className="scan-title">あなたの字を、教える。</h2>
+            <p className="scan-desc">
+              紙に書いた文字を写真に撮ってアップロードしてください。<br/>
+              あなた専用の「手書きフォント」を作成します。
+            </p>
+            
+            {!isProcessing ? (
+              <div className="upload-btn">
+                <span>手書きをスキャンする</span>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file);
+                  }} 
+                />
+              </div>
+            ) : (
+              <div className="loading-overlay">
+                <div className="spinner"></div>
+                <p>{processStatus}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {screen === 'canvas' && (
+        <div className="canvas-screen animate-fade-in">
+          <div className="paper animate-slide-up">
+            <textarea
+              className={`letter-input ${isConverted ? 'hidden-text' : ''}`}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="ここにメッセージを入力してください..."
+              disabled={isConverted || isProcessing}
+            />
+            {svg && (
+              <div 
+                className={`handwriting-svg ${isConverted ? 'visible' : ''}`} 
+                dangerouslySetInnerHTML={{ __html: svg }} 
+              />
+            )}
+          </div>
+          
+          <div className="convert-btn-wrapper animate-fade-in" style={{ animationDelay: '0.4s', animationFillMode: 'both' }}>
+            {!isConverted && (
+              <button 
+                className="convert-btn" 
+                onClick={handleConvert}
+                disabled={!text.trim() || isProcessing}
+              >
+                {isProcessing ? "変換中..." : "筆跡に変換する"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

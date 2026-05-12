@@ -1,9 +1,12 @@
 :root {
-  --bg0: #f8f4ec;
-  --bg1: #efe3d4;
-  --ink: #1a1a1a;
+  --desk-bg: #8a998a; /* Sage Green */
+  --paper-bg: #fdfcf4; /* Slightly warm off-white */
+  --text-primary: #2b2b2b;
+  --text-secondary: #5c665c;
   --accent: #b13a1f;
-  --card: rgba(255, 255, 255, 0.85);
+  --shadow-sm: 0 4px 12px rgba(0,0,0,0.05);
+  --shadow-md: 0 8px 24px rgba(0,0,0,0.1);
+  --shadow-lg: 0 16px 40px rgba(0,0,0,0.15);
 }
 
 * {
@@ -12,79 +15,268 @@
 
 body {
   margin: 0;
-  color: var(--ink);
-  background:
-    radial-gradient(1100px 600px at 90% -10%, #f7c58f 0%, transparent 60%),
-    radial-gradient(900px 500px at -5% 100%, #d9e8c8 0%, transparent 60%),
-    linear-gradient(160deg, var(--bg0), var(--bg1));
+  color: var(--text-primary);
+  background-color: var(--desk-bg);
   min-height: 100vh;
-  font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif;
+  font-family: "Shippori Mincho", serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden; /* App-like feel */
 }
 
-.page {
-  width: min(1080px, 94vw);
-  margin: 20px auto 48px;
-  display: grid;
-  gap: 14px;
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-.panel {
-  background: var(--card);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 14px;
-  padding: 16px;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
-h1, h2 {
-  margin: 0 0 8px;
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }
 
-p {
-  margin: 0;
+.animate-fade-in {
+  animation: fadeIn 0.8s ease forwards;
 }
 
-.grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+.animate-slide-up {
+  animation: slideUp 0.8s ease forwards;
 }
 
-input,
-button {
+/* Splash Screen */
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  background-color: var(--desk-bg);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+  color: white;
+}
+
+.splash-logo {
+  font-size: 3.5rem;
+  letter-spacing: 0.2em;
+  margin-bottom: 1.5rem;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.splash-subtitle {
+  font-size: 1rem;
+  opacity: 0.8;
+  letter-spacing: 0.1em;
+}
+
+/* Common App Container */
+.app-container {
   width: 100%;
-  border-radius: 10px;
-  border: 1px solid rgba(0, 0, 0, 0.25);
-  background: #fff;
-  padding: 10px;
+  max-width: 600px;
+  height: 100vh;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
-button {
-  background: var(--accent);
-  color: #fff;
+/* Scan Screen */
+.scan-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  color: white;
+  text-align: center;
+}
+
+.scan-card {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  padding: 3rem 2rem;
+  width: 100%;
+  box-shadow: var(--shadow-lg);
+}
+
+.scan-title {
+  font-size: 1.8rem;
+  margin-bottom: 1.5rem;
+  font-weight: 500;
+}
+
+.scan-desc {
+  font-size: 1rem;
+  opacity: 0.9;
+  margin-bottom: 2.5rem;
+  line-height: 1.8;
+}
+
+.upload-btn {
+  background: white;
+  color: var(--desk-bg);
   border: none;
+  border-radius: 30px;
+  padding: 16px 32px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: inherit;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  font-weight: 600;
+}
+
+.upload-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.upload-btn input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
   cursor: pointer;
 }
 
-button:disabled {
-  background: #9d9d9d;
+/* Canvas / Letter UI */
+.canvas-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 3rem 1.5rem;
+}
+
+.paper {
+  flex: 1;
+  background-color: var(--paper-bg);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  padding: 2.5rem 2rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background-image: linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px);
+  background-size: 100% 2.5rem;
+  background-position: 0 1.25rem;
+}
+
+.paper::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: url('https://www.transparenttextures.com/patterns/rice-paper.png');
+  opacity: 0.4;
+  pointer-events: none;
+  border-radius: 8px;
+}
+
+.letter-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  resize: none;
+  font-family: inherit;
+  font-size: 1.3rem;
+  line-height: 2.5rem;
+  color: var(--text-primary);
+  outline: none;
+  z-index: 1;
+  position: relative;
+  transition: opacity 0.8s ease;
+}
+
+.letter-input::placeholder {
+  color: rgba(0,0,0,0.2);
+}
+
+.letter-input.hidden-text {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.convert-btn-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2rem;
+  position: relative;
+  z-index: 10;
+}
+
+.convert-btn {
+  background: var(--text-primary);
+  color: var(--paper-bg);
+  border: none;
+  border-radius: 30px;
+  padding: 14px 36px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: inherit;
+  box-shadow: var(--shadow-md);
+  font-weight: 500;
+}
+
+.convert-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.convert-btn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-pre {
-  overflow: auto;
-  white-space: pre-wrap;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 8px;
-  padding: 10px;
+.handwriting-svg {
+  position: absolute;
+  top: 2.5rem;
+  left: 2rem;
+  right: 2rem;
+  bottom: 2.5rem;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 1.5s ease 0.5s; /* Delay to let text fade out */
 }
 
-.svg {
-  margin-top: 10px;
-  overflow: auto;
-  border: 1px dashed rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
-  padding: 8px;
-  background: #fff;
+.handwriting-svg.visible {
+  opacity: 1;
 }
 
+.handwriting-svg svg {
+  width: 100%;
+  height: auto;
+}
+
+/* Loading overlay for scan */
+.loading-overlay {
+  margin-top: 1.5rem;
+  font-size: 1rem;
+  opacity: 0.9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
