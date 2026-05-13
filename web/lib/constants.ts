@@ -4,9 +4,16 @@ export const COLORS = [
   { id: "brown", color: "#4a3320", name: "茶褐色" },
 ];
 
-export const PAPERS = [
-  { id: "lines", name: "横罫" },
-  { id: "vertical", name: "縦罫" },
-  { id: "grid", name: "原稿用紙" },
-  { id: "plain", name: "無地" },
+export type PaperStyle = {
+  id: string;
+  name: string;
+  image?: string;
+};
+
+export const PAPERS: PaperStyle[] = [
+  { id: "plain", name: "和紙" },
+  { id: "lines", name: "便箋" },
+  { id: "airmail", name: "エアメール" },
+  { id: "genkouyoushi", name: "原稿用紙" },
+  { id: "floral", name: "手紙", image: "/papers/floral.png" },
 ];

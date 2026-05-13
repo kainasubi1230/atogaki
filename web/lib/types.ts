@@ -10,4 +10,6 @@ export type CanvasItem = {
   color: string;
   isConverted: boolean;
   fontSize?: number;
+  letterSpacing?: number;
+  lineHeight?: number;
 };
