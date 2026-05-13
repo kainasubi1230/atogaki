@@ -1,34 +1,35 @@
-# Accessibility Handwriting MVP
+﻿# アクセシビリティ手書き生成 MVP
 
-This repository provides an accessibility-focused handwriting generation MVP.
+このリポジトリは、アクセシビリティ用途に限定した手書き生成MVPです。
 
-Safety guardrails included:
-- Generation is allowed only with `purpose=accessibility`
-- Every SVG includes a visible watermark: `AI生成（アクセシビリティ支援）`
-- Audit logs are stored for API requests and generation events
-- Only consented user data is allowed in training
-- Style ownership mismatch is rejected with `403`
+## 安全ガードレール
 
-## Services
+- 生成は `purpose=accessibility` の場合のみ許可
+- すべてのSVGに可視ウォーターマークを埋め込み
+- APIリクエストと生成イベントの監査ログを保存
+- 学習に使うのは同意（consent）済みデータのみ
+- スタイル所有者が一致しない場合は `403` を返却
+
+## サービス構成
 
 - `api`: FastAPI
-- `worker`: RQ worker for preprocessing jobs
-- `trainer`: RQ worker for LoRA training jobs
+- `worker`: 前処理ジョブ用 RQ Worker
+- `trainer`: LoRA学習ジョブ用 RQ Worker
 - `web`: Next.js + React
 - `postgres`, `redis`, `minio`
 
-## Quick Start
+## クイックスタート
 
 ```bash
 docker compose up --build
 ```
 
-Endpoints:
+アクセス先:
 - API: `http://localhost:8000`
 - Web: `http://localhost:3000`
 - MinIO Console: `http://localhost:9001`
 
-## API (MVP)
+## API（MVP）
 
 - `POST /auth/signup`
 - `POST /auth/login`
@@ -40,15 +41,15 @@ Endpoints:
 - `GET /outputs/{output_id}`
 - `GET /audit/logs?user_id=&from=&to=`
 
-## Base Model Training (Transfer Learning Preparation)
+## ベースモデル学習（転移学習準備）
 
-1. Build base dataset JSONL from consented preprocessed artifacts:
+1. 同意済みかつ前処理済みの成果物からベースデータセット（JSONL）を作成
 
 ```bash
 python trainer/main.py build-base-dataset --output storage/base/base_dataset.jsonl
 ```
 
-2. Train the shared base model:
+2. 共有ベースモデルを学習
 
 ```bash
 python trainer/main.py train-base \
@@ -59,17 +60,16 @@ python trainer/main.py train-base \
   --device cuda
 ```
 
-3. Docker execution example:
+3. Docker経由の実行例
 
 ```bash
 docker compose run --rm trainer python trainer/main.py build-base-dataset --output storage/base/base_dataset.jsonl
 docker compose run --rm trainer python trainer/main.py train-base --dataset storage/base/base_dataset.jsonl --output storage/models/base_model.pt --epochs 20 --batch-size 64 --device cuda
 ```
 
-## Local API Test
+## ローカルAPIテスト
 
 ```bash
 python -m pip install -r api/requirements.txt
 python -m pytest api/tests -q -p no:cacheprovider
 ```
-
