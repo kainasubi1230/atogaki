@@ -748,8 +748,10 @@ body {
 }
 
 .handwriting-svg svg path {
-  fill: currentColor !important;
+  fill: none !important;
   stroke: currentColor !important;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* Loading overlay for scan */
