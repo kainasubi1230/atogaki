@@ -1,0 +1,7 @@
+﻿services:
+  api:
+    gpus: all
+  worker:
+    gpus: all
+  trainer:
+    gpus: all
