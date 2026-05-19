@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from math import cos, sin
+from math import cos, sin, tanh
 from pathlib import Path
 import random
 from typing import Any
@@ -47,6 +47,33 @@ class TrainResult:
     similarity_score: float
     cer: float
     adapter_path: str
+
+
+_MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int]] = {}
+_KMNIST_CHAR_TO_ID: dict[str, int] = {
+    "\u304a": 0,  # お
+    "\u304d": 1,  # き
+    "\u3059": 2,  # す
+    "\u3064": 3,  # つ
+    "\u306a": 4,  # な
+    "\u306f": 5,  # は
+    "\u307e": 6,  # ま
+    "\u3084": 7,  # や
+    "\u308c": 8,  # れ
+    "\u3092": 9,  # を
+}
+_HIRAGANA_GROUP_TO_KMNIST: tuple[tuple[str, str], ...] = (
+    ("\u3041\u3042\u3043\u3044\u3045\u3046\u3047\u3048\u3049\u304a", "\u304a"),  # あ行
+    ("\u304b\u304c\u304d\u304e\u304f\u3050\u3051\u3052\u3053\u3054", "\u304d"),  # か行
+    ("\u3055\u3056\u3057\u3058\u3059\u305a\u305b\u305c\u305d\u305e", "\u3059"),  # さ行
+    ("\u305f\u3060\u3061\u3062\u3063\u3064\u3065\u3066\u3067\u3068\u3069", "\u3064"),  # た行
+    ("\u306a\u306b\u306c\u306d\u306e", "\u306a"),  # な行
+    ("\u306f\u3070\u3071\u3072\u3073\u3074\u3075\u3076\u3077\u3078\u3079\u307a\u307b\u307c\u307d", "\u306f"),  # は行
+    ("\u307e\u307f\u3080\u3081\u3082", "\u307e"),  # ま行
+    ("\u3083\u3084\u3085\u3086\u3087\u3088", "\u3084"),  # や行
+    ("\u3089\u308a\u308b\u308c\u308d", "\u308c"),  # ら行
+    ("\u308e\u308f\u3090\u3091\u3092\u3093", "\u3092"),  # わ行
+)
 
 
 def _load_jsonl_dataset(path: str) -> list[dict]:
@@ -198,7 +225,7 @@ def train_lora_adapter(user_id: int, style_id: int, dataset_count: int, output_p
     return TrainResult(similarity_score=round(similarity, 3), cer=round(cer, 3), adapter_path=str(path))
 
 
-def generate_trajectory(text: str, style_seed: str) -> list[dict]:
+def _legacy_generate_trajectory(text: str, style_seed: str) -> list[dict]:
     seed_src = f"{style_seed}:{text}"
     seed = int(hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:8], 16)
     rng = random.Random(seed)
@@ -223,3 +250,154 @@ def generate_trajectory(text: str, style_seed: str) -> list[dict]:
         points.append({"x": base_x + char_idx * 22 + 20, "y": 48, "t": t, "pen_state": "up", "width": 1})
         t += 1
     return points
+
+
+def _parse_style_seed(style_seed: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(style_seed)
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _stable_int_token(value: str, mod: int) -> int:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % max(1, mod)
+
+
+def _katakana_to_hiragana(char: str) -> str:
+    if len(char) != 1:
+        return char
+    code = ord(char)
+    if 0x30A1 <= code <= 0x30F6:
+        return chr(code - 0x60)
+    return char
+
+
+def _normalize_for_kmnist(char: str) -> str:
+    ch = _katakana_to_hiragana(char)
+    for group, mapped in _HIRAGANA_GROUP_TO_KMNIST:
+        if ch in group:
+            return mapped
+    return ch
+
+
+def _style_token_from_seed(style_seed: str) -> int:
+    payload = _parse_style_seed(style_seed)
+    if isinstance(payload.get("style_id"), int):
+        return int(payload["style_id"]) % 4096
+    return _stable_int_token(style_seed, 4096)
+
+
+def _char_token(char: str, vocab_size: int) -> int:
+    normalized = _normalize_for_kmnist(char)
+    kmnist_id = _KMNIST_CHAR_TO_ID.get(normalized)
+    if kmnist_id is not None:
+        return kmnist_id % max(1, vocab_size)
+    return _stable_int_token(char, vocab_size)
+
+
+def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None, int, int]:
+    if torch is None:
+        return None, 4096, 128
+
+    path = Path(base_model_path)
+    if not path.exists():
+        return None, 4096, 128
+
+    mtime = path.stat().st_mtime
+    cached = _MODEL_CACHE.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1], cached[2], cached[3]
+
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        checkpoint = torch.load(path, map_location="cpu")
+    except Exception:
+        return None, 4096, 128
+
+    metadata: dict[str, Any] = {}
+    state_dict = checkpoint
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        maybe_state = checkpoint.get("state_dict")
+        if isinstance(maybe_state, dict):
+            state_dict = maybe_state
+        maybe_meta = checkpoint.get("metadata")
+        if isinstance(maybe_meta, dict):
+            metadata = maybe_meta
+
+    vocab_size = int(metadata.get("vocab_size", 4096))
+    hidden_dim = int(metadata.get("hidden_dim", 128))
+    model = TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim)
+    try:
+        model.load_state_dict(state_dict, strict=False)
+    except Exception:
+        return None, 4096, 128
+    model.eval()
+    _MODEL_CACHE[str(path)] = (mtime, model, vocab_size, hidden_dim)
+    return model, vocab_size, hidden_dim
+
+
+def _trajectory_from_model(text: str, style_seed: str, base_model_path: str) -> list[dict]:
+    model, vocab_size, _hidden_dim = _load_base_model(base_model_path)
+    if model is None or torch is None or not text:
+        return []
+
+    style_id = _style_token_from_seed(style_seed)
+    rng_seed = _stable_int_token(f"{style_seed}:{text}", 2**31 - 1)
+    rng = random.Random(rng_seed)
+
+    points: list[dict] = []
+    x = 24.0
+    y = 52.0 + rng.uniform(-2.0, 2.0)
+    t = 0
+
+    with torch.no_grad():
+        for char in text:
+            char_id = _char_token(char, vocab_size)
+            seq_len = 18 + (ord(char) % 8)
+
+            char_ids = torch.full((1, seq_len), char_id, dtype=torch.long)
+            style_ids = torch.tensor([style_id], dtype=torch.long)
+            time_steps = torch.linspace(0.0, 1.0, steps=seq_len).unsqueeze(0)
+            pred = model(char_ids, style_ids, time_steps)[0].cpu()
+
+            for i in range(seq_len):
+                row = pred[i]
+                dx = tanh(float(row[0])) * 4.2 + 1.1 + rng.uniform(-0.25, 0.25)
+                dy = tanh(float(row[1])) * 2.8 + rng.uniform(-0.35, 0.35)
+                x += max(-1.2, min(6.2, dx))
+                y += max(-4.0, min(4.0, dy))
+
+                pen = float(row[2]) > 0.0
+                if i == seq_len - 1:
+                    pen = False
+                width = int(round(2.0 + tanh(float(row[3])) * 1.2))
+                width = max(1, min(4, width))
+
+                points.append(
+                    {
+                        "x": int(round(x)),
+                        "y": int(round(y)),
+                        "t": t,
+                        "pen_state": "down" if pen else "up",
+                        "width": width,
+                    }
+                )
+                t += 1
+
+            x += 8.0 + rng.uniform(2.0, 5.0)
+            y += rng.uniform(-1.0, 1.0)
+
+    return points
+
+
+def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None) -> list[dict]:
+    if not text:
+        return []
+    if base_model_path:
+        generated = _trajectory_from_model(text, style_seed, base_model_path)
+        if generated:
+            return generated
+    return _legacy_generate_trajectory(text, style_seed)

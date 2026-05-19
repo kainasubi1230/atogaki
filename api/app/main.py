@@ -8,7 +8,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from trainerlib.model import generate_trajectory
-from trainerlib.svg import trajectory_to_svg
+from trainerlib.svg import text_to_svg, trajectory_to_svg
 
 from .audit import log_event
 from .database import Base, SessionLocal, engine, get_db
@@ -30,6 +30,7 @@ from .schemas import (
     TrainStyleResponse,
 )
 from .security import create_access_token, hash_password, parse_access_token, verify_password
+from .settings import settings
 from .storage import get_storage
 from .tasks import run_preprocess_job, run_train_lora_job
 
@@ -38,10 +39,8 @@ WATERMARK_TEXT = "AI生成（アクセシビリティ支援）"
 app = FastAPI(title="Accessibility Handwriting MVP")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=settings.cors_allow_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +50,17 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+
+
+def _get_shared_style(db: Session) -> StyleAdapter:
+    if settings.shared_style_id <= 0:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="shared_style_not_configured")
+    style = db.query(StyleAdapter).filter(StyleAdapter.id == settings.shared_style_id).first()
+    if style is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="shared_style_not_found")
+    if style.disabled or style.status != "ready" or not style.adapter_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="shared_style_not_ready")
+    return style
 
 
 @app.middleware("http")
@@ -166,6 +176,9 @@ def preprocess_datasets(user_id: int, user: User = Depends(get_current_user), db
 def train_lora(user_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> TrainStyleResponse:
     if user.id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_mismatch")
+    if settings.inference_only:
+        shared_style = _get_shared_style(db)
+        return TrainStyleResponse(style_id=shared_style.id, job_id="inference-only", status="ready")
 
     style = StyleAdapter(user_id=user_id, status="training")
     db.add(style)
@@ -204,16 +217,23 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
     if payload.purpose != "accessibility":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="purpose_must_be_accessibility")
 
-    style = db.query(StyleAdapter).filter(StyleAdapter.id == payload.style_id).first()
-    if style is None or style.user_id != payload.user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="style_owner_mismatch")
+    use_shared_style = settings.inference_only and settings.shared_style_id > 0
+    if use_shared_style:
+        style = _get_shared_style(db)
+    else:
+        style = db.query(StyleAdapter).filter(StyleAdapter.id == payload.style_id).first()
+        if style is None or style.user_id != payload.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="style_owner_mismatch")
     if style.disabled or style.status != "ready" or not style.adapter_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="style_not_ready")
 
     storage = get_storage()
     adapter_seed = storage.get_text(style.adapter_key)
-    trajectory = generate_trajectory(payload.text, adapter_seed)
-    svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+    trajectory = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
+    if settings.readable_text_svg:
+        svg = text_to_svg(payload.text, WATERMARK_TEXT)
+    else:
+        svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
 
     output_svg_key = f"outputs/u{user.id}/{uuid.uuid4().hex}.svg"
     output_trajectory_key = f"outputs/u{user.id}/{uuid.uuid4().hex}.json"

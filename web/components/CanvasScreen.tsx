@@ -272,42 +272,45 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
     setIsProcessing(true);
     try {
-      if (token && userId && styleId) {
-        let newItems = [...items];
-        for (let i = 0; i < newItems.length; i++) {
-          const item = newItems[i];
-          if (
-            item.type === "text" &&
-            !item.isConverted &&
-            item.text.trim() !== ""
-          ) {
-            const result = await postJSON(
-              "/generate",
-              {
-                user_id: userId,
-                style_id: styleId,
-                text: item.text,
-                purpose: "accessibility",
-              },
-              token,
-            );
-            if (result.status === 200) {
-              const body = result.body as { svg: string };
-              newItems[i] = { ...item, svg: body.svg, isConverted: true };
-            }
+      if (!token || !userId || !styleId) {
+        alert("スタイル準備ができていません。先に画像アップロードをやり直してください。");
+        return;
+      }
+
+      let newItems = [...items];
+      let convertedCount = 0;
+      let failedCount = 0;
+      for (let i = 0; i < newItems.length; i++) {
+        const item = newItems[i];
+        if (
+          item.type === "text" &&
+          !item.isConverted &&
+          item.text.trim() !== ""
+        ) {
+          const result = await postJSON(
+            "/generate",
+            {
+              user_id: userId,
+              style_id: styleId,
+              text: item.text,
+              purpose: "accessibility",
+            },
+            token,
+          );
+          if (result.status === 200) {
+            const body = result.body as { svg: string };
+            newItems[i] = { ...item, svg: body.svg, isConverted: true };
+            convertedCount += 1;
+          } else {
+            failedCount += 1;
           }
         }
-        setItems(newItems);
-        commitHistory();
-      } else {
-        setItems((prev) =>
-          prev.map((it) =>
-            it.type === "text" && it.text.trim() !== ""
-              ? { ...it, isConverted: true }
-              : it,
-          ),
-        );
-        commitHistory();
+      }
+      setItems(newItems);
+      commitHistory();
+
+      if (convertedCount === 0 && failedCount > 0) {
+        alert("変換に失敗しました。APIサーバー設定を確認してください。");
       }
     } catch (e) {
       console.error(e);

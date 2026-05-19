@@ -14,6 +14,7 @@ os.environ["STORAGE_BACKEND"] = "local"
 
 from api.app.main import app  # noqa: E402
 from api.app.database import Base, engine  # noqa: E402
+from api.app.settings import settings  # noqa: E402
 
 
 @pytest.fixture()
@@ -135,3 +136,50 @@ def test_preprocess_failure_reason_code(client: TestClient) -> None:
     body = job.json()
     assert body["status"] == "completed"
     assert body["result"]["failure_codes"]["LOW_CONTRAST"] >= 1
+
+
+def test_inference_only_shared_style_flow(client: TestClient) -> None:
+    owner = _signup(client, "owner@example.com")
+    guest = _signup(client, "guest@example.com")
+    owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    guest_headers = {"Authorization": f"Bearer {guest['access_token']}"}
+
+    upload = client.post(
+        "/datasets/upload-scan",
+        headers=owner_headers,
+        files={"file": ("owner.png", _scan_image_bytes(), "image/png")},
+        data={"consent": "true"},
+    )
+    assert upload.status_code == 200
+    preprocess = client.post(f"/datasets/{owner['user_id']}/preprocess", headers=owner_headers)
+    assert preprocess.status_code == 200
+    train = client.post(f"/styles/{owner['user_id']}/train-lora", headers=owner_headers)
+    assert train.status_code == 200
+    shared_style_id = train.json()["style_id"]
+
+    original_inference_only = settings.inference_only
+    original_shared_style_id = settings.shared_style_id
+    object.__setattr__(settings, "inference_only", True)
+    object.__setattr__(settings, "shared_style_id", shared_style_id)
+    try:
+        shared_train = client.post(f"/styles/{guest['user_id']}/train-lora", headers=guest_headers)
+        assert shared_train.status_code == 200
+        shared_train_body = shared_train.json()
+        assert shared_train_body["style_id"] == shared_style_id
+        assert shared_train_body["job_id"] == "inference-only"
+        assert shared_train_body["status"] == "ready"
+
+        generated = client.post(
+            "/generate",
+            headers=guest_headers,
+            json={
+                "user_id": guest["user_id"],
+                "style_id": 999999,
+                "text": "shared style test",
+                "purpose": "accessibility",
+            },
+        )
+        assert generated.status_code == 200
+    finally:
+        object.__setattr__(settings, "inference_only", original_inference_only)
+        object.__setattr__(settings, "shared_style_id", original_shared_style_id)
