@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from math import cos, sin, tanh
 from pathlib import Path
 import random
@@ -12,10 +13,12 @@ try:
     import torch
     from torch import nn
     import torch.nn.functional as F
+    from torch.nn.utils.rnn import pad_sequence
 except Exception:  # pragma: no cover - optional dependency for GPU environments
     torch = None
     nn = None
     F = None
+    pad_sequence = None
 
 
 class TinyHandwritingModel(nn.Module if nn is not None else object):
@@ -47,6 +50,13 @@ class TrainResult:
     similarity_score: float
     cer: float
     adapter_path: str
+
+
+@dataclass
+class EncodedSample:
+    char_id: int
+    style_id: int
+    target: Any
 
 
 _MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int]] = {}
@@ -90,6 +100,30 @@ def _load_jsonl_dataset(path: str) -> list[dict]:
     return items
 
 
+def _encode_samples(samples: list[dict], vocab_size: int) -> list[EncodedSample]:
+    encoded: list[EncodedSample] = []
+    for sample in samples:
+        seq = sample.get("sequence") or []
+        if not seq:
+            continue
+        target = torch.tensor(seq, dtype=torch.float32)
+        if target.ndim != 2:
+            continue
+        if target.shape[1] > 4:
+            target = target[:, :4]
+        elif target.shape[1] < 4:
+            pad_cols = torch.zeros((target.shape[0], 4 - target.shape[1]), dtype=torch.float32)
+            target = torch.cat((target, pad_cols), dim=1)
+        encoded.append(
+            EncodedSample(
+                char_id=int(sample["char_id"]) % vocab_size,
+                style_id=int(sample.get("style_id", 0)),
+                target=target.contiguous(),
+            )
+        )
+    return encoded
+
+
 def _pick_device(preference: str) -> str:
     if torch is None:
         return "cpu"
@@ -100,30 +134,25 @@ def _pick_device(preference: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def _build_batch(samples: list[dict], device: str, vocab_size: int):
+def _build_batch(samples: list[EncodedSample], device: str):
+    lengths_cpu = torch.tensor([s.target.shape[0] for s in samples], dtype=torch.long)
+    max_len = int(lengths_cpu.max().item())
     batch_size = len(samples)
-    max_len = max(len(s["sequence"]) for s in samples)
 
-    char_ids = torch.zeros((batch_size, max_len), dtype=torch.long, device=device)
-    time_steps = torch.zeros((batch_size, max_len), dtype=torch.float32, device=device)
-    targets = torch.zeros((batch_size, max_len, 4), dtype=torch.float32, device=device)
-    mask = torch.zeros((batch_size, max_len), dtype=torch.float32, device=device)
-    style_ids = torch.zeros((batch_size,), dtype=torch.long, device=device)
+    targets_cpu = pad_sequence([s.target for s in samples], batch_first=True)
+    transfer_non_blocking = device == "cuda"
+    targets = targets_cpu.to(device=device, non_blocking=transfer_non_blocking)
 
-    for i, sample in enumerate(samples):
-        seq = sample["sequence"]
-        char_id = int(sample["char_id"]) % vocab_size
-        seq_len = len(seq)
-        char_ids[i, :seq_len] = char_id
-        mask[i, :seq_len] = 1.0
-        style_ids[i] = int(sample.get("style_id", 0))
-        if seq_len > 1:
-            time_steps[i, :seq_len] = torch.linspace(0.0, 1.0, steps=seq_len, device=device)
-        for j, point in enumerate(seq):
-            targets[i, j, 0] = float(point[0])
-            targets[i, j, 1] = float(point[1])
-            targets[i, j, 2] = float(point[2])
-            targets[i, j, 3] = float(point[3])
+    style_ids = torch.tensor([s.style_id for s in samples], dtype=torch.long, device=device)
+    char_tokens = torch.tensor([s.char_id for s in samples], dtype=torch.long, device=device).unsqueeze(1)
+    char_ids = char_tokens.expand(batch_size, max_len)
+
+    lengths = lengths_cpu.to(device=device, non_blocking=transfer_non_blocking)
+    steps = torch.arange(max_len, device=device, dtype=torch.float32).unsqueeze(0).expand(batch_size, max_len)
+    denom = torch.clamp(lengths - 1, min=1).to(dtype=torch.float32).unsqueeze(1)
+    time_steps = torch.where(lengths.unsqueeze(1) > 1, steps / denom, torch.zeros_like(steps))
+
+    mask = (steps < lengths.unsqueeze(1)).to(dtype=torch.float32)
     return char_ids, style_ids, time_steps, targets, mask
 
 
@@ -137,6 +166,7 @@ def train_base_model(
     device_preference: str = "auto",
     vocab_size: int = 4096,
     hidden_dim: int = 128,
+    cpu_threads: int | None = None,
 ) -> dict[str, Any]:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,22 +184,31 @@ def train_base_model(
         }
 
     samples = _load_jsonl_dataset(dataset_path)
-    if not samples:
+    encoded_samples = _encode_samples(samples, vocab_size)
+    if not encoded_samples:
         torch.save(TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).state_dict(), path)
         return {"base_model_path": str(path), "status": "saved_init_only", "reason": "dataset_empty"}
 
     device = _pick_device(device_preference)
+    if cpu_threads is None:
+        cpu_threads = max(1, os.cpu_count() or 1)
+    if cpu_threads > 0:
+        torch.set_num_threads(cpu_threads)
+        try:
+            torch.set_num_interop_threads(min(cpu_threads, 8))
+        except RuntimeError:
+            pass
     model = TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     rng = random.Random(42)
     epoch_losses: list[float] = []
     for _ in range(max(1, epochs)):
-        rng.shuffle(samples)
+        rng.shuffle(encoded_samples)
         batch_losses: list[float] = []
-        for i in range(0, len(samples), max(1, batch_size)):
-            batch = samples[i : i + max(1, batch_size)]
-            char_ids, style_ids, time_steps, targets, mask = _build_batch(batch, device, vocab_size)
+        for i in range(0, len(encoded_samples), max(1, batch_size)):
+            batch = encoded_samples[i : i + max(1, batch_size)]
+            char_ids, style_ids, time_steps, targets, mask = _build_batch(batch, device)
             pred = model(char_ids, style_ids, time_steps)
             squared = F.mse_loss(pred, targets, reduction="none")
             loss = (squared * mask.unsqueeze(-1)).sum() / torch.clamp(mask.sum() * 4.0, min=1.0)
@@ -189,6 +228,7 @@ def train_base_model(
             "lr": lr,
             "final_loss": epoch_losses[-1] if epoch_losses else None,
             "device": device,
+            "cpu_threads": cpu_threads,
             "vocab_size": vocab_size,
             "hidden_dim": hidden_dim,
         },

@@ -28,6 +28,7 @@ def main() -> None:
     base.add_argument("--batch-size", type=int, default=32)
     base.add_argument("--lr", type=float, default=1e-3)
     base.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    base.add_argument("--cpu-threads", type=int, default=0, help="0: auto (all cores), >0: explicit")
 
     import_public = sub.add_parser("import-public-k49")
     import_public.add_argument("--output", default="storage/base/base_dataset.jsonl")
@@ -71,6 +72,7 @@ def main() -> None:
             batch_size=args.batch_size,
             lr=args.lr,
             device_preference=args.device,
+            cpu_threads=None if args.cpu_threads <= 0 else args.cpu_threads,
         )
         print(json.dumps(result, ensure_ascii=False))
         return
