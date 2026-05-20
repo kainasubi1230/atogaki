@@ -24,6 +24,37 @@
 docker compose up --build
 ```
 
+## Web をローカル `npm run dev` で動かす
+
+1. Node.js 22 を有効化（`nvm` 利用）
+
+```bash
+nvm install
+nvm use
+```
+
+2. 依存をインストール
+
+```bash
+npm install
+```
+
+3. API は Docker で起動したまま、Web コンテナだけ停止（ポート競合回避）
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml stop web
+```
+
+4. Web 開発サーバー起動
+
+```bash
+npm run dev
+```
+
+アクセス先:
+- Web: `http://localhost:3000`
+- API: `http://localhost:8000`
+
 ## GPUサーバー起動手順
 
 1. サーバー側で NVIDIA ドライバ + nvidia-container-toolkit を導入し、`nvidia-smi` が通る状態にする
