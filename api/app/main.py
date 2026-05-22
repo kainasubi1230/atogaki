@@ -1,4 +1,5 @@
 from datetime import datetime
+import math
 import uuid
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -8,6 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from trainerlib.model import generate_trajectory
+from trainerlib.preprocess import preprocess_scan
 from trainerlib.svg import text_to_svg, trajectory_to_svg
 
 from .audit import log_event
@@ -27,6 +29,8 @@ from .schemas import (
     OutputResponse,
     SignupRequest,
     TokenResponse,
+    TrajectoryUploadRequest,
+    TrajectoryUploadResponse,
     TrainStyleResponse,
 )
 from .security import create_access_token, hash_password, parse_access_token, verify_password
@@ -122,6 +126,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
 @app.post("/datasets/upload-scan", response_model=DatasetUploadResponse)
 async def upload_scan(
     consent: bool = Form(...),
+    label: str | None = Form(default=None),
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -131,7 +136,26 @@ async def upload_scan(
     storage = get_storage()
     storage.put_bytes(key, payload, file.content_type or "application/octet-stream")
 
+    normalized_label = (label or "").strip()
     dataset = Dataset(user_id=user.id, object_key=key, consent=consent, active=True)
+    if normalized_label:
+        result = preprocess_scan(payload)
+        if result.get("success"):
+            segments = result.get("segments", [])
+            for segment in segments:
+                if isinstance(segment, dict):
+                    segment["label"] = normalized_label
+            result["segment_count"] = len(segments)
+        artifact_key = f"preprocessed/u{user.id}/{uuid.uuid4().hex}.json"
+        storage.put_text(artifact_key, dumps(result), content_type="application/json")
+        dataset.preprocess_artifact_key = artifact_key
+        if result.get("success"):
+            dataset.preprocess_status = "done"
+            dataset.preprocess_error_code = None
+        else:
+            dataset.preprocess_status = "failed"
+            dataset.preprocess_error_code = str(result.get("reason_code") or "PREPROCESS_FAILED")
+
     db.add(dataset)
     db.commit()
     db.refresh(dataset)
@@ -141,11 +165,122 @@ async def upload_scan(
         path="/datasets/upload-scan",
         method="POST",
         event_type="dataset_upload",
-        detail={"dataset_id": dataset.id, "consent": consent},
+        detail={
+            "dataset_id": dataset.id,
+            "consent": consent,
+            "label": normalized_label or None,
+            "preprocess_status": dataset.preprocess_status,
+        },
         user_id=user.id,
         status_code=200,
     )
-    return DatasetUploadResponse(dataset_id=dataset.id, user_id=user.id, consent=consent)
+    return DatasetUploadResponse(
+        dataset_id=dataset.id,
+        user_id=user.id,
+        consent=consent,
+        preprocess_status=dataset.preprocess_status,
+        preprocess_error_code=dataset.preprocess_error_code,
+    )
+
+
+@app.post("/datasets/upload-trajectory", response_model=TrajectoryUploadResponse)
+def upload_trajectory(
+    payload: TrajectoryUploadRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrajectoryUploadResponse:
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label_required")
+
+    normalized_points: list[dict] = []
+    for idx, p in enumerate(payload.points):
+        x = float(p.x)
+        y = float(p.y)
+        t = int(p.t) if p.t >= 0 else idx
+        width = float(p.width)
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(width)):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_point_values")
+        normalized_points.append(
+            {
+                "x": int(round(x)),
+                "y": int(round(y)),
+                "t": t,
+                "pen_state": p.pen_state,
+                "width": width,
+            }
+        )
+
+    normalized_points.sort(key=lambda p: int(p["t"]))
+    if normalized_points[-1]["pen_state"] != "up":
+        normalized_points[-1]["pen_state"] = "up"
+    down_points = [p for p in normalized_points if p["pen_state"] == "down"]
+    if not down_points:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="no_pen_down_points")
+    if len(normalized_points) < 16 or len(down_points) < 12:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="trajectory_too_short")
+
+    xs = [int(p["x"]) for p in normalized_points]
+    ys = [int(p["y"]) for p in normalized_points]
+    bbox = {"x0": min(xs), "y0": min(ys), "x1": max(xs), "y1": max(ys)}
+    if (bbox["x1"] - bbox["x0"]) < 10 and (bbox["y1"] - bbox["y0"]) < 10:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="trajectory_too_small")
+
+    storage = get_storage()
+    raw_key = f"trajectories/u{user.id}/{uuid.uuid4().hex}.json"
+    artifact_key = f"preprocessed/u{user.id}/{uuid.uuid4().hex}.json"
+
+    raw_payload = {
+        "user_id": user.id,
+        "label": label,
+        "point_count": len(normalized_points),
+        "points": normalized_points,
+    }
+    storage.put_text(raw_key, dumps(raw_payload), content_type="application/json")
+
+    artifact_payload = {
+        "success": True,
+        "reason_code": None,
+        "segment_count": 1,
+        "segments": [
+            {
+                "bbox": bbox,
+                "trajectory": normalized_points,
+                "label": label,
+            }
+        ],
+    }
+    storage.put_text(artifact_key, dumps(artifact_payload), content_type="application/json")
+
+    dataset = Dataset(
+        user_id=user.id,
+        object_key=raw_key,
+        consent=payload.consent,
+        active=True,
+        preprocess_status="done",
+        preprocess_artifact_key=artifact_key,
+        preprocess_error_code=None,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    log_event(
+        db,
+        path="/datasets/upload-trajectory",
+        method="POST",
+        event_type="trajectory_upload",
+        detail={"dataset_id": dataset.id, "point_count": len(normalized_points), "consent": payload.consent},
+        user_id=user.id,
+        status_code=200,
+    )
+    return TrajectoryUploadResponse(
+        dataset_id=dataset.id,
+        user_id=user.id,
+        consent=payload.consent,
+        point_count=len(normalized_points),
+        artifact_key=artifact_key,
+    )
 
 
 @app.post("/datasets/{user_id}/preprocess", response_model=JobResponse)

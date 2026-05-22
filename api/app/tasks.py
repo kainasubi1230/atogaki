@@ -39,13 +39,27 @@ def run_preprocess_job(job_id: str) -> None:
         payload = loads(job.payload_json)
         user_id = payload["user_id"]
 
-        datasets = (
+        consented_datasets = (
             db.query(Dataset)
             .filter(Dataset.user_id == user_id, Dataset.active.is_(True), Dataset.consent.is_(True))
             .all()
         )
-        if not datasets:
+        if not consented_datasets:
             _set_job_status(db, job, "failed", {"message": "no consented datasets"}, "NO_CONSENT_DATA")
+            return
+        datasets = [d for d in consented_datasets if d.preprocess_status != "done"]
+        if not datasets:
+            _set_job_status(
+                db,
+                job,
+                "completed",
+                {
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "failure_codes": {},
+                    "skipped_done_count": len(consented_datasets),
+                },
+            )
             return
 
         successes = 0

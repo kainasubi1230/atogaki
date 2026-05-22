@@ -4,10 +4,13 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-from math import cos, sin, tanh
+from math import atan2, cos, hypot, sin, tanh
 from pathlib import Path
 import random
+import secrets
 from typing import Any
+
+from .char_token import char_to_model_id, stable_int_token
 
 try:
     import torch
@@ -59,31 +62,7 @@ class EncodedSample:
     target: Any
 
 
-_MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int]] = {}
-_KMNIST_CHAR_TO_ID: dict[str, int] = {
-    "\u304a": 0,  # お
-    "\u304d": 1,  # き
-    "\u3059": 2,  # す
-    "\u3064": 3,  # つ
-    "\u306a": 4,  # な
-    "\u306f": 5,  # は
-    "\u307e": 6,  # ま
-    "\u3084": 7,  # や
-    "\u308c": 8,  # れ
-    "\u3092": 9,  # を
-}
-_HIRAGANA_GROUP_TO_KMNIST: tuple[tuple[str, str], ...] = (
-    ("\u3041\u3042\u3043\u3044\u3045\u3046\u3047\u3048\u3049\u304a", "\u304a"),  # あ行
-    ("\u304b\u304c\u304d\u304e\u304f\u3050\u3051\u3052\u3053\u3054", "\u304d"),  # か行
-    ("\u3055\u3056\u3057\u3058\u3059\u305a\u305b\u305c\u305d\u305e", "\u3059"),  # さ行
-    ("\u305f\u3060\u3061\u3062\u3063\u3064\u3065\u3066\u3067\u3068\u3069", "\u3064"),  # た行
-    ("\u306a\u306b\u306c\u306d\u306e", "\u306a"),  # な行
-    ("\u306f\u3070\u3071\u3072\u3073\u3074\u3075\u3076\u3077\u3078\u3079\u307a\u307b\u307c\u307d", "\u306f"),  # は行
-    ("\u307e\u307f\u3080\u3081\u3082", "\u307e"),  # ま行
-    ("\u3083\u3084\u3085\u3086\u3087\u3088", "\u3084"),  # や行
-    ("\u3089\u308a\u308b\u308c\u308d", "\u308c"),  # ら行
-    ("\u308e\u308f\u3090\u3091\u3092\u3093", "\u3092"),  # わ行
-)
+_MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int, dict[str, Any]]] = {}
 
 
 def _load_jsonl_dataset(path: str) -> list[dict]:
@@ -122,6 +101,56 @@ def _encode_samples(samples: list[dict], vocab_size: int) -> list[EncodedSample]
             )
         )
     return encoded
+
+
+def _collect_sequence_length_metadata(encoded_samples: list[EncodedSample]) -> dict[str, Any]:
+    if not encoded_samples:
+        return {"sequence_len_mean": 96.0, "char_len_mean": {}}
+    total_len = 0
+    by_char: dict[int, tuple[int, int]] = {}
+    for sample in encoded_samples:
+        seq_len = int(sample.target.shape[0])
+        total_len += seq_len
+        cur_total, cur_count = by_char.get(sample.char_id, (0, 0))
+        by_char[sample.char_id] = (cur_total + seq_len, cur_count + 1)
+    char_len_mean = {
+        str(char_id): (char_total / max(1, char_count))
+        for char_id, (char_total, char_count) in by_char.items()
+    }
+    return {
+        "sequence_len_mean": total_len / len(encoded_samples),
+        "char_len_mean": char_len_mean,
+    }
+
+
+def _collect_char_exemplars(
+    samples: list[dict],
+    vocab_size: int,
+    *,
+    per_char_cap: int = 24,
+    max_seq_len: int = 180,
+) -> dict[str, list[list[list[float]]]]:
+    exemplars: dict[str, list[list[list[float]]]] = {}
+    rng = random.Random(1234)
+    shuffled = list(samples)
+    rng.shuffle(shuffled)
+    for sample in shuffled:
+        seq = sample.get("sequence") or []
+        if not seq:
+            continue
+        char_id = int(sample.get("char_id", 0)) % vocab_size
+        key = str(char_id)
+        bucket = exemplars.setdefault(key, [])
+        if len(bucket) >= per_char_cap:
+            continue
+        clipped: list[list[float]] = []
+        for row in seq[:max_seq_len]:
+            if not isinstance(row, list) or len(row) < 4:
+                continue
+            clipped.append([float(row[0]), float(row[1]), float(row[2]), float(row[3])])
+        if len(clipped) >= 8:
+            bucket.append(clipped)
+    return exemplars
 
 
 def _pick_device(preference: str) -> str:
@@ -218,6 +247,7 @@ def train_base_model(
             batch_losses.append(float(loss.detach().cpu().item()))
         epoch_losses.append(sum(batch_losses) / max(1, len(batch_losses)))
 
+    seq_meta = _collect_sequence_length_metadata(encoded_samples)
     checkpoint = {
         "state_dict": model.state_dict(),
         "metadata": {
@@ -231,6 +261,9 @@ def train_base_model(
             "cpu_threads": cpu_threads,
             "vocab_size": vocab_size,
             "hidden_dim": hidden_dim,
+            "sequence_len_mean": seq_meta["sequence_len_mean"],
+            "char_len_mean": seq_meta["char_len_mean"],
+            "char_exemplars": _collect_char_exemplars(samples, vocab_size),
         },
     }
     torch.save(checkpoint, path)
@@ -300,62 +333,36 @@ def _parse_style_seed(style_seed: str) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _stable_int_token(value: str, mod: int) -> int:
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % max(1, mod)
-
-
-def _katakana_to_hiragana(char: str) -> str:
-    if len(char) != 1:
-        return char
-    code = ord(char)
-    if 0x30A1 <= code <= 0x30F6:
-        return chr(code - 0x60)
-    return char
-
-
-def _normalize_for_kmnist(char: str) -> str:
-    ch = _katakana_to_hiragana(char)
-    for group, mapped in _HIRAGANA_GROUP_TO_KMNIST:
-        if ch in group:
-            return mapped
-    return ch
-
-
 def _style_token_from_seed(style_seed: str) -> int:
     payload = _parse_style_seed(style_seed)
     if isinstance(payload.get("style_id"), int):
         return int(payload["style_id"]) % 4096
-    return _stable_int_token(style_seed, 4096)
+    return stable_int_token(style_seed, 4096)
 
 
 def _char_token(char: str, vocab_size: int) -> int:
-    normalized = _normalize_for_kmnist(char)
-    kmnist_id = _KMNIST_CHAR_TO_ID.get(normalized)
-    if kmnist_id is not None:
-        return kmnist_id % max(1, vocab_size)
-    return _stable_int_token(char, vocab_size)
+    return char_to_model_id(char, vocab_size)
 
 
-def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None, int, int]:
+def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None, int, int, dict[str, Any]]:
     if torch is None:
-        return None, 4096, 128
+        return None, 4096, 128, {}
 
     path = Path(base_model_path)
     if not path.exists():
-        return None, 4096, 128
+        return None, 4096, 128, {}
 
     mtime = path.stat().st_mtime
     cached = _MODEL_CACHE.get(str(path))
     if cached is not None and cached[0] == mtime:
-        return cached[1], cached[2], cached[3]
+        return cached[1], cached[2], cached[3], cached[4]
 
     try:
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
         checkpoint = torch.load(path, map_location="cpu")
     except Exception:
-        return None, 4096, 128
+        return None, 4096, 128, {}
 
     metadata: dict[str, Any] = {}
     state_dict = checkpoint
@@ -373,19 +380,128 @@ def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None,
     try:
         model.load_state_dict(state_dict, strict=False)
     except Exception:
-        return None, 4096, 128
+        return None, 4096, 128, {}
     model.eval()
-    _MODEL_CACHE[str(path)] = (mtime, model, vocab_size, hidden_dim)
-    return model, vocab_size, hidden_dim
+    _MODEL_CACHE[str(path)] = (mtime, model, vocab_size, hidden_dim, metadata)
+    return model, vocab_size, hidden_dim, metadata
 
 
-def _trajectory_from_model(text: str, style_seed: str, base_model_path: str) -> list[dict]:
-    model, vocab_size, _hidden_dim = _load_base_model(base_model_path)
+def _infer_sequence_len(char_id: int, metadata: dict[str, Any], rng: random.Random) -> int:
+    char_len_mean = metadata.get("char_len_mean")
+    char_mean = None
+    if isinstance(char_len_mean, dict):
+        raw = char_len_mean.get(str(char_id))
+        if isinstance(raw, (int, float)):
+            char_mean = float(raw)
+    global_mean_raw = metadata.get("sequence_len_mean", 96.0)
+    global_mean = float(global_mean_raw) if isinstance(global_mean_raw, (int, float)) else 96.0
+    base = char_mean if char_mean is not None else global_mean
+    # Slight style jitter while staying near training-length distribution.
+    jitter = rng.uniform(-0.12, 0.12)
+    seq_len = int(round(base * (1.0 + jitter)))
+    return max(24, min(240, seq_len))
+
+
+def _trajectory_from_exemplar(
+    text: str,
+    style_seed: str,
+    metadata: dict[str, Any],
+    vocab_size: int,
+    rng: random.Random,
+) -> list[dict]:
+    char_exemplars = metadata.get("char_exemplars")
+    if not isinstance(char_exemplars, dict):
+        return []
+    points: list[dict] = []
+    x_offset = 24.0
+    y_offset = 54.0 + rng.uniform(-2.0, 2.0)
+    t = 0
+
+    for char in text:
+        char_id = _char_token(char, vocab_size)
+        bucket = char_exemplars.get(str(char_id))
+        if not isinstance(bucket, list) or not bucket:
+            return []
+        seq = bucket[int(rng.random() * len(bucket)) % len(bucket)]
+        if not isinstance(seq, list) or len(seq) < 8:
+            return []
+
+        # Decode local trajectory from normalized deltas.
+        local = [(0.0, 0.0, "up", 2)]
+        lx = 0.0
+        ly = 0.0
+        for row in seq:
+            dx = float(row[0]) * 20.0
+            dy = float(row[1]) * 20.0
+            lx += dx
+            ly += dy
+            pen = "down" if float(row[2]) > 0.5 else "up"
+            width = int(round(max(0.2, min(1.2, float(row[3]))) * 4.0))
+            local.append((lx, ly, pen, max(1, min(4, width))))
+
+        # Apply random affine to create style variation while preserving character shape.
+        theta = rng.uniform(-0.18, 0.18)
+        c = cos(theta)
+        s = sin(theta)
+        sx = rng.uniform(0.88, 1.14)
+        sy = rng.uniform(0.88, 1.14)
+        shx = rng.uniform(-0.16, 0.16)
+        shy = rng.uniform(-0.08, 0.08)
+
+        xs = [p[0] for p in local]
+        ys = [p[1] for p in local]
+        cx = (min(xs) + max(xs)) * 0.5
+        cy = (min(ys) + max(ys)) * 0.5
+
+        transformed: list[tuple[float, float, str, int]] = []
+        for lx, ly, pen, width in local:
+            px = lx - cx
+            py = ly - cy
+            ax = (px * sx) + (py * shx)
+            ay = (py * sy) + (px * shy)
+            tx = (ax * c) - (ay * s)
+            ty = (ax * s) + (ay * c)
+            tx += x_offset + rng.uniform(-0.25, 0.25)
+            ty += y_offset + rng.uniform(-0.25, 0.25)
+            transformed.append((tx, ty, pen, width))
+
+        # Ensure at least one pen-up near end to separate strokes.
+        if transformed:
+            last_tx, last_ty, _pen, last_width = transformed[-1]
+            transformed[-1] = (last_tx, last_ty, "up", last_width)
+
+        for tx, ty, pen, width in transformed:
+            points.append(
+                {
+                    "x": int(round(tx)),
+                    "y": int(round(ty)),
+                    "t": t,
+                    "pen_state": pen,
+                    "width": width,
+                }
+            )
+            t += 1
+
+        x_offset += 26.0 + rng.uniform(-1.0, 2.0)
+        y_offset += rng.uniform(-0.8, 0.8)
+    return points
+
+
+def _trajectory_from_model(
+    text: str,
+    style_seed: str,
+    base_model_path: str,
+    *,
+    seed_token: str | None = None,
+) -> list[dict]:
+    model, vocab_size, _hidden_dim, metadata = _load_base_model(base_model_path)
     if model is None or torch is None or not text:
         return []
 
     style_id = _style_token_from_seed(style_seed)
-    rng_seed = _stable_int_token(f"{style_seed}:{text}", 2**31 - 1)
+    if seed_token is None:
+        seed_token = secrets.token_hex(8)
+    rng_seed = stable_int_token(f"{style_seed}:{text}:{seed_token}", 2**31 - 1)
     rng = random.Random(rng_seed)
 
     points: list[dict] = []
@@ -396,7 +512,7 @@ def _trajectory_from_model(text: str, style_seed: str, base_model_path: str) -> 
     with torch.no_grad():
         for char in text:
             char_id = _char_token(char, vocab_size)
-            seq_len = 18 + (ord(char) % 8)
+            seq_len = _infer_sequence_len(char_id, metadata, rng)
 
             char_ids = torch.full((1, seq_len), char_id, dtype=torch.long)
             style_ids = torch.tensor([style_id], dtype=torch.long)
@@ -405,15 +521,19 @@ def _trajectory_from_model(text: str, style_seed: str, base_model_path: str) -> 
 
             for i in range(seq_len):
                 row = pred[i]
-                dx = tanh(float(row[0])) * 4.2 + 1.1 + rng.uniform(-0.25, 0.25)
-                dy = tanh(float(row[1])) * 2.8 + rng.uniform(-0.35, 0.35)
-                x += max(-1.2, min(6.2, dx))
-                y += max(-4.0, min(4.0, dy))
+                # Training target stores normalized deltas: dx/20, dy/20.
+                # Decode with the inverse scale to preserve learned geometry.
+                dx = float(row[0]) * 20.0 + rng.uniform(-0.35, 0.35)
+                dy = float(row[1]) * 20.0 + rng.uniform(-0.35, 0.35)
+                x += max(-8.0, min(8.0, dx))
+                y += max(-8.0, min(8.0, dy))
 
-                pen = float(row[2]) > 0.0
+                pen = float(row[2]) > 0.5
+                if i == 0:
+                    pen = True
                 if i == seq_len - 1:
                     pen = False
-                width = int(round(2.0 + tanh(float(row[3])) * 1.2))
+                width = int(round(max(0.2, min(1.2, float(row[3]))) * 4.0))
                 width = max(1, min(4, width))
 
                 points.append(
@@ -427,17 +547,156 @@ def _trajectory_from_model(text: str, style_seed: str, base_model_path: str) -> 
                 )
                 t += 1
 
-            x += 8.0 + rng.uniform(2.0, 5.0)
-            y += rng.uniform(-1.0, 1.0)
+            x += 10.0 + rng.uniform(1.0, 3.0)
+            y += rng.uniform(-0.8, 0.8)
 
     return points
+
+
+def _trajectory_quality_score(points: list[dict], text: str) -> float:
+    if not points:
+        return float("-inf")
+    down_points = [p for p in points if p.get("pen_state") == "down"]
+    if len(down_points) < 2:
+        return float("-inf")
+
+    xs = [int(p.get("x", 0)) for p in down_points]
+    ys = [int(p.get("y", 0)) for p in down_points]
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+    if width <= 0 or height <= 0:
+        return float("-inf")
+
+    segment_lengths: list[float] = []
+    headings: list[float] = []
+    for idx in range(1, len(down_points)):
+        dx = float(down_points[idx]["x"] - down_points[idx - 1]["x"])
+        dy = float(down_points[idx]["y"] - down_points[idx - 1]["y"])
+        seg = hypot(dx, dy)
+        if seg <= 1e-6:
+            continue
+        segment_lengths.append(seg)
+        headings.append(atan2(dy, dx))
+    if not segment_lengths:
+        return float("-inf")
+
+    total_path_len = sum(segment_lengths)
+    disp = hypot(
+        float(down_points[-1]["x"] - down_points[0]["x"]),
+        float(down_points[-1]["y"] - down_points[0]["y"]),
+    )
+    straightness = total_path_len / max(disp, 1e-6)
+    turns = 0
+    for idx in range(1, len(headings)):
+        delta = headings[idx] - headings[idx - 1]
+        while delta > 3.141592653589793:
+            delta -= 6.283185307179586
+        while delta < -3.141592653589793:
+            delta += 6.283185307179586
+        if abs(delta) >= 0.35:
+            turns += 1
+
+    text_len = max(1, len(text))
+    return (
+        min(2.5, straightness) * 2.0
+        + min(5.0, height / max(1.0, width * 0.1))
+        + min(5.0, width / max(8.0, text_len * 8.0))
+        + min(6.0, turns / text_len)
+    )
+
+
+def _is_plausible_trajectory(points: list[dict], text: str) -> bool:
+    if len(points) < max(8, len(text) * 10):
+        return False
+
+    down_points = [p for p in points if p.get("pen_state") == "down"]
+    down_count = len(down_points)
+    if down_count < max(6, len(text) * 6):
+        return False
+
+    xs = [int(p.get("x", 0)) for p in down_points]
+    ys = [int(p.get("y", 0)) for p in down_points]
+    if not xs or not ys:
+        return False
+
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+    if width < max(20, len(text) * 10):
+        return False
+    if height < max(8, int(width * 0.12)):
+        return False
+
+    if down_count < 2:
+        return False
+
+    segment_lengths: list[float] = []
+    headings: list[float] = []
+    for idx in range(1, down_count):
+        dx = float(down_points[idx]["x"] - down_points[idx - 1]["x"])
+        dy = float(down_points[idx]["y"] - down_points[idx - 1]["y"])
+        seg = hypot(dx, dy)
+        if seg <= 1e-6:
+            continue
+        segment_lengths.append(seg)
+        headings.append(atan2(dy, dx))
+
+    if len(segment_lengths) < max(4, len(text) * 4):
+        return False
+
+    total_path_len = sum(segment_lengths)
+    disp = hypot(
+        float(down_points[-1]["x"] - down_points[0]["x"]),
+        float(down_points[-1]["y"] - down_points[0]["y"]),
+    )
+    if disp <= 1e-6:
+        return False
+    if (total_path_len / disp) < 1.18:
+        return False
+
+    turn_count = 0
+    for idx in range(1, len(headings)):
+        delta = headings[idx] - headings[idx - 1]
+        while delta > 3.141592653589793:
+            delta -= 6.283185307179586
+        while delta < -3.141592653589793:
+            delta += 6.283185307179586
+        if abs(delta) >= 0.35:
+            turn_count += 1
+    if turn_count < max(2, len(text)):
+        return False
+
+    return True
 
 
 def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None) -> list[dict]:
     if not text:
         return []
     if base_model_path:
-        generated = _trajectory_from_model(text, style_seed, base_model_path)
-        if generated:
-            return generated
+        model, vocab_size, _hidden_dim, metadata = _load_base_model(base_model_path)
+        if model is None:
+            return []
+        rng_seed = stable_int_token(f"{style_seed}:{text}:hybrid", 2**31 - 1)
+        rng = random.Random(rng_seed)
+        best: list[dict] | None = None
+        best_score = float("-inf")
+        for attempt in range(12):
+            generated: list[dict]
+            if attempt < 6:
+                generated = _trajectory_from_exemplar(text, style_seed, metadata, vocab_size, rng)
+            else:
+                generated = _trajectory_from_model(
+                    text,
+                    style_seed,
+                    base_model_path,
+                    seed_token=f"{attempt}:{secrets.token_hex(8)}",
+                )
+            if generated and _is_plausible_trajectory(generated, text):
+                return generated
+            score = _trajectory_quality_score(generated, text)
+            if score > best_score:
+                best_score = score
+                best = generated
+        if best:
+            return best
+        return []
     return _legacy_generate_trajectory(text, style_seed)

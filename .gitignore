@@ -10,6 +10,7 @@ storage/
 test_storage/
 api/storage/
 web/.next/
+node_modules/
 web/node_modules/
 web/tsconfig.tsbuildinfo
 web/.env.local

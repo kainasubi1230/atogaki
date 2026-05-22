@@ -23,6 +23,30 @@ class DatasetUploadResponse(BaseModel):
     dataset_id: int
     user_id: int
     consent: bool
+    preprocess_status: str | None = None
+    preprocess_error_code: str | None = None
+
+
+class TrajectoryPoint(BaseModel):
+    x: float
+    y: float
+    t: int
+    pen_state: str = Field(pattern="^(down|up)$")
+    width: float = Field(default=2.0, ge=0.1, le=20.0)
+
+
+class TrajectoryUploadRequest(BaseModel):
+    consent: bool = True
+    label: str = Field(min_length=1, max_length=64)
+    points: list[TrajectoryPoint] = Field(min_length=2, max_length=20000)
+
+
+class TrajectoryUploadResponse(BaseModel):
+    dataset_id: int
+    user_id: int
+    consent: bool
+    point_count: int
+    artifact_key: str
 
 
 class JobResponse(BaseModel):

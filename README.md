@@ -81,12 +81,40 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec -T api pytho
 - `POST /auth/signup`
 - `POST /auth/login`
 - `POST /datasets/upload-scan`
+- `POST /datasets/upload-trajectory`
 - `POST /datasets/{user_id}/preprocess`
 - `POST /styles/{user_id}/train-lora`
 - `POST /generate`
 - `GET /jobs/{job_id}`
 - `GET /outputs/{output_id}`
 - `GET /audit/logs?user_id=&from=&to=`
+
+### Web手書き軌跡の収集（学習用）
+
+`Scan` 画面の「Web手書きサンプル（学習データ用）」で描画して「軌跡を保存」を押すと、
+`POST /datasets/upload-trajectory` へ軌跡が送信されます。
+
+- 保存時点で `preprocess_status=done` のデータとして登録されるため、`build-base-dataset` で直接学習データに取り込まれます。
+- `label` には描いた文字（例: `あ`）を入れてください。
+
+軌跡データだけで学習データセットを作る例:
+
+```bash
+docker compose exec -T trainer python trainer/main.py build-base-dataset \
+  --output storage/base/base_dataset_trajectories_only.jsonl \
+  --object-key-prefix trajectories/
+```
+
+その後の再学習:
+
+```bash
+docker compose exec -T trainer python trainer/main.py train-base \
+  --dataset storage/base/base_dataset_trajectories_only.jsonl \
+  --output storage/models/base_model_trajectories_only.pt \
+  --epochs 20 \
+  --batch-size 128 \
+  --device cuda
+```
 
 ## ベースモデル学習（転移学習準備）
 

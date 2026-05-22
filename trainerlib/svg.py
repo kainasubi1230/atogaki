@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from html import escape
 import random
 
@@ -14,18 +15,20 @@ def text_to_svg(text: str, watermark_text: str) -> str:
     start_x = 20.0
     start_y = 56.0
 
-    rng = random.Random(hash(text) & 0xFFFFFFFF)
+    seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], 16)
+    rng = random.Random(seed)
     tspans: list[str] = []
     max_x = start_x
     for line_idx, line in enumerate(lines):
         x = start_x
         baseline = start_y + line_idx * line_height + rng.uniform(-1.0, 1.0)
         for ch in line:
-            dx = 26.0 + rng.uniform(-3.0, 2.0)
-            rotate = rng.uniform(-7.0, 7.0)
-            y = baseline + rng.uniform(-2.2, 2.2)
+            dx = 26.5 + rng.uniform(-4.0, 2.4)
+            rotate = rng.uniform(-9.0, 9.0)
+            y = baseline + rng.uniform(-2.6, 2.6)
+            char_size = font_size + rng.uniform(-2.2, 1.6)
             tspans.append(
-                f"<tspan x='{x:.1f}' y='{y:.1f}' rotate='{rotate:.1f}'>{escape(ch)}</tspan>"
+                f"<tspan x='{x:.1f}' y='{y:.1f}' rotate='{rotate:.1f}' font-size='{char_size:.1f}'>{escape(ch)}</tspan>"
             )
             x += dx
         max_x = max(max_x, x)
@@ -36,14 +39,14 @@ def text_to_svg(text: str, watermark_text: str) -> str:
     glyphs = "".join(tspans)
     # Prefer common Japanese system fonts; fallback keeps text readable.
     font_family = (
-        "'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', "
-        "'Noto Sans JP', sans-serif"
+        "'Klee One', 'Yusei Magic', 'Shippori Mincho', "
+        "'Yuji Syuku', 'Hiragino Mincho ProN', 'Yu Mincho', serif"
     )
     return (
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}'>"
         "<rect width='100%' height='100%' fill='white'/>"
         f"<text fill='black' font-size='{font_size}' font-family=\"{font_family}\" "
-        "style='font-weight:500;letter-spacing:0.5px'>"
+        "style='font-weight:500;letter-spacing:0.45px'>"
         f"{glyphs}</text>"
         f"<text x='12' y='{watermark_y}' fill='#c62828' font-size='14'>{escape(watermark_text)}</text>"
         "</svg>"

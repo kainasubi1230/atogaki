@@ -280,6 +280,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       let newItems = [...items];
       let convertedCount = 0;
       let failedCount = 0;
+      let lastErrorDetail = "";
       for (let i = 0; i < newItems.length; i++) {
         const item = newItems[i];
         if (
@@ -299,10 +300,17 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           );
           if (result.status === 200) {
             const body = result.body as { svg: string };
-            newItems[i] = { ...item, svg: body.svg, isConverted: true };
-            convertedCount += 1;
+            if (body.svg && body.svg.trim() !== "") {
+              newItems[i] = { ...item, svg: body.svg, isConverted: true };
+              convertedCount += 1;
+            } else {
+              failedCount += 1;
+              lastErrorDetail = "empty_svg";
+            }
           } else {
             failedCount += 1;
+            const body = result.body as { detail?: string };
+            lastErrorDetail = body?.detail ?? `http_${result.status}`;
           }
         }
       }
@@ -310,7 +318,8 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       commitHistory();
 
       if (convertedCount === 0 && failedCount > 0) {
-        alert("変換に失敗しました。APIサーバー設定を確認してください。");
+        const suffix = lastErrorDetail ? ` (${lastErrorDetail})` : "";
+        alert(`変換に失敗しました。スタイル準備をやり直してください。${suffix}`);
       }
     } catch (e) {
       console.error(e);

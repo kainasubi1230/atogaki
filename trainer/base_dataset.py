@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from api.app.database import SessionLocal, engine
 from api.app.models import Dataset
 from api.app.storage import get_storage
+from trainerlib.char_token import char_to_model_id
 
 
 def _sorted_trajectory(points: list[dict]) -> list[dict]:
@@ -43,6 +44,24 @@ def _pseudo_char_id(dataset_id: int, bbox: dict, sequence_len: int) -> int:
     return int(digest[:8], 16) % 4096
 
 
+def _char_id_from_segment(source: Dataset, segment: dict, sequence_len: int) -> int:
+    label = segment.get("label")
+    if isinstance(label, str):
+        normalized = label.strip()
+        if normalized:
+            return char_to_model_id(normalized)
+    return _pseudo_char_id(source.id, segment.get("bbox", {}), sequence_len)
+
+
+def _normalized_label_from_segment(segment: dict) -> str | None:
+    label = segment.get("label")
+    if isinstance(label, str):
+        normalized = label.strip()
+        if normalized:
+            return normalized
+    return None
+
+
 @dataclass
 class BuildStats:
     dataset_rows: int
@@ -64,11 +83,25 @@ def _fetch_source_datasets(db: Session) -> list[Dataset]:
     )
 
 
+def _fetch_source_datasets_with_prefix(db: Session, object_key_prefix: str | None) -> list[Dataset]:
+    query = db.query(Dataset).filter(
+        Dataset.active.is_(True),
+        Dataset.consent.is_(True),
+        Dataset.preprocess_status == "done",
+        Dataset.preprocess_artifact_key.is_not(None),
+    )
+    if object_key_prefix:
+        query = query.filter(Dataset.object_key.like(f"{object_key_prefix}%"))
+    return query.all()
+
+
 def build_base_dataset(
     output_path: str,
     *,
     min_points: int = 8,
     max_segments_per_dataset: int = 500,
+    object_key_prefix: str | None = None,
+    require_label: bool = False,
 ) -> BuildStats:
     if not inspect(engine).has_table("datasets"):
         output = Path(output_path)
@@ -79,7 +112,7 @@ def build_base_dataset(
     storage = get_storage()
     db = SessionLocal()
     try:
-        source_datasets = _fetch_source_datasets(db)
+        source_datasets = _fetch_source_datasets_with_prefix(db, object_key_prefix)
     finally:
         db.close()
 
@@ -100,12 +133,16 @@ def build_base_dataset(
                 continue
             segments = artifact.get("segments", [])[: max(1, max_segments_per_dataset)]
             for segment in segments:
+                if require_label and _normalized_label_from_segment(segment) is None:
+                    skipped_count += 1
+                    continue
                 sequence = _to_feature_sequence(segment.get("trajectory", []))
                 if len(sequence) < min_points:
                     skipped_count += 1
                     continue
+                char_id = _char_id_from_segment(source, segment, len(sequence))
                 sample = {
-                    "char_id": _pseudo_char_id(source.id, segment.get("bbox", {}), len(sequence)),
+                    "char_id": char_id,
                     "style_id": 0,
                     "dataset_id": source.id,
                     "user_id": source.user_id,
