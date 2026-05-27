@@ -3,6 +3,7 @@ import json
 
 import numpy as np
 from PIL import Image
+from trainer.public_dataset import _image_to_sequence
 
 
 LOW_CONTRAST = "LOW_CONTRAST"
@@ -26,26 +27,39 @@ def _binary_projection_groups(mask: np.ndarray, axis: int) -> list[tuple[int, in
 
 
 def _stroke_from_mask(mask: np.ndarray) -> list[dict]:
-    y_coords, x_coords = np.where(mask)
-    if len(x_coords) == 0:
+    if mask.ndim != 2:
         return []
-    order = np.argsort(y_coords * mask.shape[1] + x_coords)
+    # Convert foreground mask into grayscale tile for robust path extraction.
+    tile = np.where(mask, 0, 255).astype(np.uint8)
+    seq = _image_to_sequence(tile, max_points=220, threshold=128, smooth_profile="default")
+    if not seq:
+        return []
+
     points: list[dict] = []
-    stride = max(1, len(order) // 120)
+    x = 0.0
+    y = 0.0
     t = 0
-    for idx in order[::stride]:
+    for row in seq:
+        if not isinstance(row, list) or len(row) < 4:
+            continue
+        x += float(row[0]) * 20.0
+        y += float(row[1]) * 20.0
+        pen_down = float(row[2]) > 0.5
+        w = max(1, min(4, int(round(float(row[3]) * 4.0))))
         points.append(
             {
-                "x": int(x_coords[idx]),
-                "y": int(y_coords[idx]),
+                "x": int(round(x)),
+                "y": int(round(y)),
                 "t": t,
-                "pen_state": "down",
-                "width": 2,
+                "pen_state": "down" if pen_down else "up",
+                "width": w,
             }
         )
         t += 1
-    if points:
-        points[-1]["pen_state"] = "up"
+    if len(points) < 2:
+        return []
+    # Ensure explicit pen-up at stroke end.
+    points[-1]["pen_state"] = "up"
     return points
 
 
@@ -72,6 +86,10 @@ def preprocess_scan(image_bytes: bytes) -> dict:
             stroke = _stroke_from_mask(char_mask)
             if not stroke:
                 continue
+            # Move local stroke coordinates back to full image coordinates.
+            for p in stroke:
+                p["x"] = int(p["x"]) + int(x0)
+                p["y"] = int(p["y"]) + int(y0)
             segments.append(
                 {
                     "bbox": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},

@@ -5,6 +5,7 @@ type Props = {
   token: string;
   userId: number | null;
   authStatus: "loading" | "ready" | "error";
+  authError?: string;
   onRetryAuth: () => void;
   onComplete: (styleId: number | null) => void;
 };
@@ -17,28 +18,28 @@ type UploadScanBody = {
   dataset_id?: number;
   preprocess_status?: string | null;
   preprocess_error_code?: string | null;
-};
-
-type TrajectoryPoint = {
-  x: number;
-  y: number;
-  t: number;
-  pen_state: "down" | "up";
-  width: number;
+  segment_count?: number | null;
+  labeled_segment_count?: number | null;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SUCCESS_STATUSES = new Set(["completed", "finished", "succeeded", "ready"]);
 const FAILURE_STATUSES = new Set(["failed", "error", "cancelled", "canceled"]);
+const HIRAGANA_BASIC = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん";
+const KATAKANA_BASIC = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン";
 
-export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete }: Props) {
+function compactChars(text: string): string {
+  return Array.from(text)
+    .filter((ch) => ch.trim().length > 0)
+    .join("");
+}
+
+export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, onComplete }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState("");
-  const [isSavingTrajectory, setIsSavingTrajectory] = useState(false);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [trajectoryPoints, setTrajectoryPoints] = useState<TrajectoryPoint[]>([]);
-  const [tick, setTick] = useState(0);
   const [sampleLabel, setSampleLabel] = useState("あ");
+  const [useBatchLabels, setUseBatchLabels] = useState(true);
+  const [batchLabels, setBatchLabels] = useState(`${HIRAGANA_BASIC}${KATAKANA_BASIC}`);
   const isAuthReady = Boolean(token && userId && authStatus === "ready");
 
   async function waitForJob(tokenValue: string, jobId: string, label: string) {
@@ -79,7 +80,10 @@ export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete 
       formData.append("consent", "true");
       formData.append("file", file);
       const normalizedLabel = sampleLabel.trim();
-      if (normalizedLabel) {
+      const normalizedBatchLabels = compactChars(batchLabels);
+      if (useBatchLabels && normalizedBatchLabels.length > 0) {
+        formData.append("labels", normalizedBatchLabels);
+      } else if (normalizedLabel) {
         formData.append("label", normalizedLabel);
       }
 
@@ -95,7 +99,13 @@ export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete 
       const uploadPreprocessStatus = uploadBody.preprocess_status ?? null;
 
       if (uploadPreprocessStatus === "done") {
-        setProcessStatus("ラベル付き前処理が完了しました。");
+        const seg = uploadBody.segment_count ?? 0;
+        const labeled = uploadBody.labeled_segment_count ?? 0;
+        if (seg > 0) {
+          setProcessStatus(`ラベル付き前処理が完了しました（切り出し ${seg} / ラベル付与 ${labeled}）。`);
+        } else {
+          setProcessStatus("ラベル付き前処理が完了しました。");
+        }
       } else if (uploadPreprocessStatus === "failed") {
         throw new Error(`preprocess_failed:upload:${uploadBody.preprocess_error_code ?? "unknown"}`);
       } else {
@@ -153,7 +163,7 @@ export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete 
       } else if (message.includes("preprocess_failed:upload:NO_TEXT_DETECTED")) {
         alert("文字を検出できませんでした。背景を単純にして、紙が画面いっぱいに入るように撮影してください。");
       } else if (message.includes("preprocess_failed:upload:TOO_FEW_SEGMENTS")) {
-        alert("文字の切り出しに失敗しました。1文字を大きく書いた画像で再試行してください。");
+        alert("文字の切り出しに失敗しました。画像の明るさ・コントラストを上げ、文字同士の間隔を広めにして再試行してください。");
       } else {
         alert("スタイル準備に失敗しました。前処理/学習ジョブが失敗していないか確認してください。");
       }
@@ -162,121 +172,6 @@ export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete 
       setIsProcessing(false);
     }
   }
-
-  function pointFromEvent(
-    e: React.PointerEvent<HTMLDivElement>,
-  ): { x: number; y: number } {
-    const rect = e.currentTarget.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
-      y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
-    };
-  }
-
-  function handlePadPointerDown(e: React.PointerEvent<HTMLDivElement>) {
-    if (!isAuthReady || isSavingTrajectory || isProcessing) return;
-    const p = pointFromEvent(e);
-    setIsDrawing(true);
-    setTrajectoryPoints((prev) => [
-      ...prev,
-      { x: p.x, y: p.y, t: tick, pen_state: "down", width: 2.0 },
-    ]);
-    setTick((prev) => prev + 1);
-    e.currentTarget.setPointerCapture(e.pointerId);
-  }
-
-  function handlePadPointerMove(e: React.PointerEvent<HTMLDivElement>) {
-    if (!isDrawing || !isAuthReady || isSavingTrajectory || isProcessing) return;
-    const p = pointFromEvent(e);
-    setTrajectoryPoints((prev) => [
-      ...prev,
-      { x: p.x, y: p.y, t: tick, pen_state: "down", width: 2.0 },
-    ]);
-    setTick((prev) => prev + 1);
-  }
-
-  function handlePadPointerUp(e: React.PointerEvent<HTMLDivElement>) {
-    if (!isDrawing || !isAuthReady || isSavingTrajectory || isProcessing) return;
-    const p = pointFromEvent(e);
-    setTrajectoryPoints((prev) => [
-      ...prev,
-      { x: p.x, y: p.y, t: tick, pen_state: "up", width: 2.0 },
-    ]);
-    setTick((prev) => prev + 1);
-    setIsDrawing(false);
-    e.currentTarget.releasePointerCapture(e.pointerId);
-  }
-
-  function clearTrajectoryPad() {
-    setTrajectoryPoints([]);
-    setTick(0);
-    setIsDrawing(false);
-  }
-
-  async function saveTrajectorySample() {
-    if (!isAuthReady || !token || !userId) {
-      alert("初期化中です。数秒待ってから再試行してください。");
-      return;
-    }
-    if (trajectoryPoints.length < 2) {
-      alert("先に手書きサンプルを描いてください。");
-      return;
-    }
-    const normalizedLabel = sampleLabel.trim();
-    if (!normalizedLabel) {
-      alert("ラベルは必須です（例: あ）。");
-      return;
-    }
-
-    setIsSavingTrajectory(true);
-    try {
-      const res = await fetch(`${API_BASE}/datasets/upload-trajectory`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          consent: true,
-          label: normalizedLabel,
-          points: trajectoryPoints,
-        }),
-      });
-      if (!res.ok) {
-        let detail = "";
-        try {
-          const err = (await res.json()) as { detail?: string };
-          detail = err.detail ?? "";
-        } catch {
-          // ignore parse errors and fall back to status only
-        }
-        throw new Error(`trajectory_upload_failed:${res.status}:${detail}`);
-      }
-      const body = (await res.json()) as { dataset_id?: number; point_count?: number };
-      alert(
-        `軌跡サンプルを保存しました（dataset_id=${body.dataset_id ?? "?"}, points=${body.point_count ?? trajectoryPoints.length}）`,
-      );
-      clearTrajectoryPad();
-    } catch (e) {
-      console.error(e);
-      const message = e instanceof Error ? e.message : String(e);
-      if (message.includes("trajectory_too_short")) {
-        alert("軌跡が短すぎます。1文字をゆっくり、はっきり描いてください。");
-      } else if (message.includes("trajectory_too_small")) {
-        alert("描画サイズが小さすぎます。もう少し大きく書いてください。");
-      } else if (message.includes("label_required")) {
-        alert("ラベルを入力してください（例: あ）。");
-      } else {
-        alert("軌跡サンプルの保存に失敗しました。");
-      }
-    } finally {
-      setIsSavingTrajectory(false);
-    }
-  }
-
-  const trajectoryPath = trajectoryPoints
-    .map((p, idx) => `${idx === 0 || p.pen_state !== "down" ? "M" : "L"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(" ");
 
   const statusLabel =
     authStatus === "ready"
@@ -310,103 +205,76 @@ export function ScanScreen({ token, userId, authStatus, onRetryAuth, onComplete 
               />
             </div>
             <p style={{ marginTop: "0.5rem", fontSize: "0.8rem", opacity: 0.88 }}>
-              紙画像を学習データ化する場合は、下のラベル欄に文字（例: あ）を入れてからアップロードしてください。
+              1枚にひらがな・カタカナを複数書いた画像は「一括ラベル」をONにしてアップロードしてください（左上から読み順で対応）。
             </p>
+            {authStatus === "error" && authError ? (
+              <p style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "#ffd8d8" }}>
+                初期化エラー: {authError}
+              </p>
+            ) : null}
+            <div
+              style={{
+                marginTop: "0.8rem",
+                textAlign: "left",
+                color: "rgba(255,255,255,0.94)",
+              }}
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.86rem" }}>
+                <input
+                  type="checkbox"
+                  checked={useBatchLabels}
+                  disabled={!isAuthReady || isProcessing}
+                  onChange={(e) => setUseBatchLabels(e.target.checked)}
+                />
+                かな一括ラベルを使う（1枚画像向け）
+              </label>
+              <textarea
+                value={batchLabels}
+                disabled={!isAuthReady || isProcessing || !useBatchLabels}
+                onChange={(e) => setBatchLabels(e.target.value)}
+                rows={3}
+                style={{
+                  marginTop: "0.45rem",
+                  width: "100%",
+                  borderRadius: "8px",
+                  border: "1px solid rgba(255,255,255,0.35)",
+                  background: useBatchLabels ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
+                  color: "white",
+                  padding: "0.45rem 0.55rem",
+                  fontSize: "0.82rem",
+                  lineHeight: 1.3,
+                }}
+              />
+              <p style={{ margin: "0.35rem 0 0", fontSize: "0.74rem", opacity: 0.8 }}>
+                現在 {compactChars(batchLabels).length} 文字。推奨: ひらがな→カタカナ順で画像上に並べる。
+              </p>
+              {!useBatchLabels ? (
+                <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.6rem", alignItems: "center" }}>
+                  <label style={{ fontSize: "0.84rem", minWidth: "3.2rem" }}>単一ラベル</label>
+                  <input
+                    type="text"
+                    value={sampleLabel}
+                    maxLength={64}
+                    disabled={!isAuthReady || isProcessing}
+                    onChange={(e) => setSampleLabel(e.target.value)}
+                    style={{
+                      flex: 1,
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255,255,255,0.35)",
+                      background: "rgba(255,255,255,0.15)",
+                      color: "white",
+                      padding: "0.4rem 0.55rem",
+                      fontSize: "0.86rem",
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
             {authStatus === "error" && (
               <button className="convert-btn" onClick={onRetryAuth} style={{ marginTop: "0.8rem" }}>
                 初期化を再試行
               </button>
             )}
-
-            <div
-              style={{
-                marginTop: "1.4rem",
-                textAlign: "left",
-                color: "rgba(255,255,255,0.94)",
-              }}
-            >
-              <p style={{ margin: "0 0 0.5rem", fontSize: "0.92rem", opacity: 0.95 }}>
-                Web手書きサンプル（学習データ用）
-              </p>
-              <div
-                style={{
-                  display: "flex",
-                  gap: "0.6rem",
-                  alignItems: "center",
-                  marginBottom: "0.55rem",
-                }}
-              >
-                <label style={{ fontSize: "0.85rem", minWidth: "3.2rem" }}>ラベル</label>
-                <input
-                  type="text"
-                  value={sampleLabel}
-                  maxLength={64}
-                  disabled={!isAuthReady || isSavingTrajectory}
-                  onChange={(e) => setSampleLabel(e.target.value)}
-                  style={{
-                    flex: 1,
-                    borderRadius: "8px",
-                    border: "1px solid rgba(255,255,255,0.35)",
-                    background: "rgba(255,255,255,0.15)",
-                    color: "white",
-                    padding: "0.4rem 0.55rem",
-                    fontSize: "0.9rem",
-                  }}
-                />
-              </div>
-              <div
-                role="presentation"
-                onPointerDown={handlePadPointerDown}
-                onPointerMove={handlePadPointerMove}
-                onPointerUp={handlePadPointerUp}
-                onPointerCancel={handlePadPointerUp}
-                style={{
-                  width: "100%",
-                  height: "180px",
-                  borderRadius: "10px",
-                  border: "1px solid rgba(255,255,255,0.35)",
-                  background: "rgba(255,255,255,0.08)",
-                  position: "relative",
-                  cursor: isAuthReady ? "crosshair" : "not-allowed",
-                  overflow: "hidden",
-                }}
-              >
-                <svg width="100%" height="100%">
-                  {trajectoryPath ? (
-                    <path
-                      d={trajectoryPath}
-                      stroke="white"
-                      strokeWidth={2}
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ) : null}
-                </svg>
-              </div>
-              <div style={{ display: "flex", gap: "0.6rem", marginTop: "0.6rem" }}>
-                <button
-                  className="convert-btn"
-                  disabled={!isAuthReady || isSavingTrajectory || trajectoryPoints.length === 0}
-                  onClick={clearTrajectoryPad}
-                  style={{ flex: 1 }}
-                >
-                  クリア
-                </button>
-                <button
-                  className="convert-btn"
-                  disabled={!isAuthReady || isSavingTrajectory || trajectoryPoints.length < 2 || sampleLabel.trim().length === 0}
-                  onClick={saveTrajectorySample}
-                  style={{ flex: 1 }}
-                >
-                  {isSavingTrajectory ? "保存中..." : "軌跡を保存"}
-                </button>
-              </div>
-              <p style={{ margin: "0.45rem 0 0", fontSize: "0.78rem", opacity: 0.86 }}>
-                ラベル付きで保存すると前処理済みデータとして登録され、ベース学習データに直接使えます。
-              </p>
-            </div>
           </>
         ) : (
           <div className="loading-overlay">

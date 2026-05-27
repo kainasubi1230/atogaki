@@ -752,6 +752,31 @@ body {
   stroke: currentColor !important;
   stroke-linecap: round;
   stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+}
+
+.handwriting-editor {
+  position: relative;
+  border: 1px dashed transparent;
+  padding: 2px;
+  transition: border-color 0.2s;
+}
+
+.draggable-wrapper.selected .handwriting-editor,
+.handwriting-editor:hover {
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.handwriting-editor svg {
+  overflow: visible;
+}
+
+.handwriting-editor path {
+  cursor: default;
+}
+
+.handwriting-editor.eraser-mode path {
+  cursor: cell;
 }
 
 /* Loading overlay for scan */

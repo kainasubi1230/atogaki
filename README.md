@@ -116,6 +116,15 @@ docker compose exec -T trainer python trainer/main.py train-base \
   --device cuda
 ```
 
+### 1枚画像でかな一括学習
+
+`Scan` 画面で「かな一括ラベルを使う（1枚画像向け）」をONにすると、  
+`/datasets/upload-scan` に複数文字ラベル（`labels`）を渡します。
+
+- 画像内の文字は **左上から読み順** で切り出して対応付けます。
+- 例: ひらがな→カタカナの順で並べて1枚に書いた画像をアップロード。
+- そのまま `train-lora` まで自動で進むので、ユーザー別フォント学習に使えます。
+
 ## ベースモデル学習（転移学習準備）
 
 1. 公開データ（Kuzushiji-49）を4万文字取り込み（初回は自動ダウンロード）
@@ -152,6 +161,47 @@ docker compose run --rm trainer python trainer/main.py train-base --dataset stor
 注記:
 - `POST /generate` は `BASE_MODEL_PATH`（デフォルト: `./storage/models/base_model.pt`）を参照します。
 - モデルファイルが存在しない場合はフォールバック生成になります。公開データを使う場合は `train-base` を最低1回実行してください。
+
+## 常用漢字フル対応データセット（KanjiVG）
+
+常用漢字 2136 字をまとめて取り込む:
+
+```bash
+python trainer/main.py import-kanjivg-joyo \
+  --output storage/base/base_dataset_kanjivg_joyo_full_v5.jsonl \
+  --variants-per-char 3 \
+  --compact-scale 0.90 \
+  --hand-jitter 1.20 \
+  --replace \
+  --source-name kanjivg-joyo-v5
+```
+
+ユーザー軌跡データ（`base_dataset_from_trajectory.jsonl`）と統合して学習用を作る例:
+
+```bash
+cat storage/base/base_dataset_kanjivg_joyo_full_v5.jsonl \
+    storage/base/base_dataset_from_trajectory.jsonl \
+  > storage/base/base_dataset_joyo_full_plus_user_v1.jsonl
+```
+
+そのまま再学習:
+
+```bash
+python trainer/main.py train-base \
+  --dataset storage/base/base_dataset_joyo_full_plus_user_v1.jsonl \
+  --output storage/models/base_model_joyo_full_plus_user_v1.pt \
+  --epochs 40 \
+  --batch-size 128 \
+  --device cuda
+```
+
+運用時は `.env` の `BASE_MODEL_PATH` を上記出力に合わせてください。
+
+## ユーザー別フォント（転移学習）のポイント
+
+- `POST /datasets/upload-trajectory` で **1文字ラベル付き**（例: `漢`）の軌跡を保存すると、`train-lora` で文字別 exemplar と筆跡プロファイルを作成します。
+- `POST /styles/{user_id}/train-lora` は、同意済み/前処理済みデータからユーザー固有アダプタを生成します。
+- `POST /generate` は、ベースモデル exemplar に加えてユーザー exemplar を優先利用し、未学習文字はベースへフォールバックします。
 
 ## 推論専用モード（GPU PC学習 + 公開サーバー推論）
 

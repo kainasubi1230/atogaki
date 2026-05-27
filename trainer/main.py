@@ -123,10 +123,40 @@ def main() -> None:
     import_kanjivg.add_argument("--chars-limit", type=int, default=0, help="0 means all joyo")
     import_kanjivg.add_argument("--variants-per-char", type=int, default=3)
     import_kanjivg.add_argument("--compact-scale", type=float, default=0.90, help="global size scale; smaller -> more compact")
+    import_kanjivg.add_argument("--hand-jitter", type=float, default=1.15, help="handwritten wobble strength")
     import_kanjivg.add_argument("--seed", type=int, default=42)
     import_kanjivg.add_argument("--append", action="store_true")
     import_kanjivg.add_argument("--replace", action="store_true")
     import_kanjivg.add_argument("--source-name", default="kanjivg-joyo")
+
+    import_kanjivg_kana = sub.add_parser("import-kanjivg-kana")
+    import_kanjivg_kana.add_argument("--output", default="storage/base/base_dataset_kanjivg_kana.jsonl")
+    import_kanjivg_kana.add_argument("--repo-dir", default="storage/public_cache/net_datasets/kanjivg/kanji")
+    import_kanjivg_kana.add_argument("--script", choices=["both", "hiragana", "katakana"], default="both")
+    import_kanjivg_kana.add_argument("--variants-per-char", type=int, default=4)
+    import_kanjivg_kana.add_argument("--compact-scale", type=float, default=0.90)
+    import_kanjivg_kana.add_argument("--hand-jitter", type=float, default=1.05)
+    import_kanjivg_kana.add_argument("--seed", type=int, default=42)
+    import_kanjivg_kana.add_argument("--append", action="store_true")
+    import_kanjivg_kana.add_argument("--replace", action="store_true")
+    import_kanjivg_kana.add_argument("--source-name", default="kanjivg-kana")
+
+    runtime_master = sub.add_parser("build-runtime-master-dataset")
+    runtime_master.add_argument("--output", default="storage/base/base_dataset_runtime_master.jsonl")
+    runtime_master.add_argument(
+        "--inputs",
+        nargs="*",
+        default=[],
+        help="Source JSONL files. Empty means built-in defaults.",
+    )
+    runtime_master.add_argument("--per-char-limit", type=int, default=24)
+    runtime_master.add_argument("--min-score", type=float, default=20.0)
+    runtime_master.add_argument("--seed", type=int, default=42)
+    runtime_master.add_argument(
+        "--source-profile",
+        choices=["balanced", "hq_handwriting"],
+        default="balanced",
+    )
 
     image_gen = sub.add_parser("generate-kana-images")
     image_gen.add_argument("--text", required=True, help="Characters to generate, e.g. あいうえお")
@@ -310,9 +340,48 @@ def main() -> None:
             chars_limit=args.chars_limit,
             variants_per_char=args.variants_per_char,
             compact_scale=args.compact_scale,
+            hand_jitter=args.hand_jitter,
             seed=args.seed,
             append=append,
             source_name=args.source_name,
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False))
+        return
+
+    if args.cmd == "import-kanjivg-kana":
+        from trainer.kanjivg_dataset import import_kanjivg_kana_to_base_dataset
+
+        if args.append and args.replace:
+            raise ValueError("--append and --replace cannot be used together")
+        append = True
+        if args.replace:
+            append = False
+        if args.append:
+            append = True
+        result = import_kanjivg_kana_to_base_dataset(
+            output_path=args.output,
+            repo_dir=args.repo_dir,
+            script=args.script,
+            variants_per_char=args.variants_per_char,
+            compact_scale=args.compact_scale,
+            hand_jitter=args.hand_jitter,
+            seed=args.seed,
+            append=append,
+            source_name=args.source_name,
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False))
+        return
+
+    if args.cmd == "build-runtime-master-dataset":
+        from trainer.runtime_master_dataset import build_runtime_master_dataset
+
+        result = build_runtime_master_dataset(
+            output_path=args.output,
+            input_paths=args.inputs if args.inputs else None,
+            per_char_limit=max(1, int(args.per_char_limit)),
+            min_score=float(args.min_score),
+            seed=int(args.seed),
+            source_profile=args.source_profile,
         )
         print(json.dumps(result.__dict__, ensure_ascii=False))
         return

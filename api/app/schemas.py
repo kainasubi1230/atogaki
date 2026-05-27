@@ -25,6 +25,8 @@ class DatasetUploadResponse(BaseModel):
     consent: bool
     preprocess_status: str | None = None
     preprocess_error_code: str | None = None
+    segment_count: int | None = None
+    labeled_segment_count: int | None = None
 
 
 class TrajectoryPoint(BaseModel):
@@ -69,6 +71,18 @@ class TrainStyleResponse(BaseModel):
     style_id: int
     job_id: str
     status: str
+
+
+class StyleCoverageResponse(BaseModel):
+    style_id: int
+    status: str
+    total_target_chars: int
+    covered_count: int
+    missing_count: int
+    covered_chars: str
+    missing_hiragana: str
+    missing_katakana: str
+    missing_kanji_core: str
 
 
 class GenerateRequest(BaseModel):

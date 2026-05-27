@@ -46,6 +46,7 @@ class Settings:
     inference_only: bool = _bool_env("INFERENCE_ONLY", False)
     shared_style_id: int = _int_env("SHARED_STYLE_ID", 0)
     readable_text_svg: bool = _bool_env("READABLE_TEXT_SVG", False)
+    text_only_mode: bool = _bool_env("TEXT_ONLY_MODE", False)
     cors_allow_origins: list[str] = field(
         default_factory=lambda: _list_env(
             "CORS_ALLOW_ORIGINS",

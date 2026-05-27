@@ -1,8 +1,14 @@
 export type ScreenState = "splash" | "scan" | "canvas";
 
+export type HandwritingPath = {
+  id: string;
+  d: string;
+  strokeWidth: number;
+};
+
 export type CanvasItem = {
   id: string;
-  type: "text" | "square" | "circle" | "triangle";
+  type: "text" | "square" | "circle" | "triangle" | "handwriting";
   x: number;
   y: number;
   text: string;
@@ -12,4 +18,8 @@ export type CanvasItem = {
   fontSize?: number;
   letterSpacing?: number;
   lineHeight?: number;
+  paths?: HandwritingPath[];
+  svgViewBox?: string;
+  boxWidth?: number;
+  boxHeight?: number;
 };

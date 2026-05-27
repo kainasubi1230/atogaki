@@ -27,3 +27,23 @@ export async function postJSON(
     };
   }
 }
+
+export async function getJSON(path: string, token?: string): Promise<ApiResult> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: "GET",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return { status: response.status, body: await response.json() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
+    return {
+      status: 0,
+      body: {
+        detail: `network_error: ${message}`,
+      },
+    };
+  }
+}
