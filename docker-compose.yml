@@ -109,6 +109,8 @@ services:
       - minio
 
   web:
+    profiles:
+      - docker-web
     build:
       context: .
       dockerfile: web/Dockerfile

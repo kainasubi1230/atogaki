@@ -1,0 +1,825 @@
+/*!***************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ../node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[2]!../node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[3]!./app/globals.css ***!
+  \***************************************************************************************************************************************************************************************************************************************************************/
+:root {
+  --desk-bg: #8a998a; /* Sage Green */
+  --paper-bg: #fdfcf4; /* Slightly warm off-white */
+  --text-primary: #2b2b2b;
+  --text-secondary: #5c665c;
+  --accent: #b13a1f;
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  color: var(--text-primary);
+  background-color: var(--desk-bg);
+  font-family: "Shippori Mincho", serif;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.8s ease forwards;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.8s ease forwards;
+}
+
+/* Splash Screen */
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  background-color: var(--desk-bg);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+  color: white;
+}
+
+.splash-logo {
+  font-size: 3.5rem;
+  letter-spacing: 0.2em;
+  margin-bottom: 1.5rem;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.splash-subtitle {
+  font-size: 1rem;
+  opacity: 0.8;
+  letter-spacing: 0.1em;
+}
+
+/* Common App Container */
+.app-container {
+  flex: 1 1;
+  width: 100%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Scan Screen */
+.scan-screen {
+  flex: 1 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  color: white;
+  text-align: center;
+}
+
+.scan-card {
+  background: rgba(255, 255, 255, 0.15);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  padding: 3rem 2rem;
+  width: 100%;
+  max-width: 600px;
+  box-shadow: var(--shadow-lg);
+}
+
+.scan-title {
+  font-size: 1.8rem;
+  margin-bottom: 1.5rem;
+  font-weight: 500;
+}
+
+.scan-desc {
+  font-size: 1rem;
+  opacity: 0.9;
+  margin-bottom: 2.5rem;
+  line-height: 1.8;
+}
+
+.upload-btn {
+  background: white;
+  color: var(--desk-bg);
+  border: none;
+  border-radius: 30px;
+  padding: 16px 32px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: inherit;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  font-weight: 600;
+}
+
+.upload-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.upload-btn input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Canvas / Letter UI */
+.canvas-screen {
+  flex: 1 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden; /* Prevent scrolling on body, allow inner scrolling */
+  min-height: 0;
+}
+
+/* Sidebar toggle button (Tab style) */
+.menu-toggle-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 280px; /* aligns with right edge of sidebar */
+  z-index: 20;
+  background: #faf8f5;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  width: 32px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 4px 0 8px rgba(0, 0, 0, 0.05);
+  color: var(--text-secondary);
+  transition: left 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.menu-toggle-btn:hover {
+  background: #f0eee9;
+}
+
+.menu-toggle-btn.closed {
+  left: 0;
+}
+
+/* Sidebar (Traditional Washi Book style) */
+.sidebar {
+  width: 280px;
+  background: #faf8f5;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  border-left: 10px solid var(--accent); /* Japanese binding effect */
+  padding: 1.5rem 1.2rem; /* Revert top padding since button is now a tab */
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  box-shadow: 4px 0 15px rgba(0, 0, 0, 0.05);
+  position: relative;
+  z-index: 10;
+  overflow: hidden;
+  transition: margin-left 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.sidebar.closed {
+  margin-left: -280px;
+}
+
+.sidebar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: url("https://www.transparenttextures.com/patterns/rice-paper.png");
+  opacity: 0.6;
+  pointer-events: none;
+  border-radius: 0 4px 4px 0;
+}
+
+.sidebar-section {
+  position: relative; /* stay above texture */
+}
+
+.sidebar-divider {
+  border: none;
+  border-top: 1px dotted rgba(0, 0, 0, 0.2);
+  margin: 0;
+  width: 100%;
+  position: relative;
+}
+
+.sidebar-section h3 {
+  font-family: "Shippori Mincho", serif;
+  font-size: 1rem;
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.05em;
+}
+
+/* Hanko-like square before headings */
+.sidebar-section h3::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background-color: var(--accent);
+  border-radius: 1px;
+}
+
+/* Tool Grid for adding items */
+.tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-gap: 0.4rem;
+  gap: 0.4rem;
+}
+
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  padding: 0.6rem 0;
+  color: var(--text-primary);
+  font-family: "Shippori Mincho", serif;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tool-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.4);
+}
+
+.tool-btn:active {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.tool-btn.active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: #fff;
+}
+
+/* Color Options */
+.color-options {
+  display: flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.color-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
+}
+
+.color-btn.active {
+  border-color: white;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Custom Color Picker */
+.color-picker-wrapper {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.color-picker-wrapper:hover {
+  transform: scale(1.1);
+}
+
+.color-picker-input {
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  width: 50px;
+  height: 50px;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+
+/* Paper Options */
+.paper-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.paper-btn {
+  width: calc(50% - 0.2rem);
+  padding: 0.6rem 0;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "Shippori Mincho", serif;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.paper-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.4);
+}
+
+.paper-btn.active {
+  border-color: var(--text-primary);
+  color: #fff;
+  background: var(--text-primary);
+  font-weight: 500;
+}
+
+/* Sidebar Slider */
+.sidebar-slider {
+  flex: 1 1;
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
+  background: rgba(0, 0, 0, 0.1);
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  transition: background 0.2s;
+}
+
+.sidebar-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+          appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+  -webkit-transition: transform 0.1s;
+  transition: transform 0.1s;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.sidebar-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.canvas-main {
+  flex: 1 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  overflow: hidden; /* Fits screen perfectly */
+  min-height: 0;
+  position: relative;
+}
+
+/* Paper Base */
+.paper {
+  position: relative;
+  background-color: var(--paper-bg);
+  border-radius: 4px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  
+  /* Modern pure CSS aspect ratio scaling */
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.paper.orientation-portrait {
+  aspect-ratio: 1 / 1.4142;
+  height: 100%;
+}
+
+.paper.orientation-landscape {
+  aspect-ratio: 1.4142 / 1;
+  /* Make height exactly equal to portrait's width (100% / 1.4142) */
+  height: 70.71%; 
+}
+
+.paper::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: url("https://www.transparenttextures.com/patterns/rice-paper.png");
+  opacity: 0.5;
+}
+
+.paper.has-custom-image::before,
+.paper.has-custom-image::after {
+  display: none !important;
+}
+
+/* 2. Genkouyoushi (Japanese Grid) */
+.paper.style-genkouyoushi {
+  background-color: #fcf8f2;
+}
+.paper.orientation-portrait.style-genkouyoushi::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 85%;
+  aspect-ratio: 15 / 21;
+  background-image:
+    linear-gradient(rgba(177, 58, 31, 0.4) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(177, 58, 31, 0.4) 1px, transparent 1px);
+  background-size: calc(100% / 15) calc(100% / 21);
+  border-right: 1px solid rgba(177, 58, 31, 0.4);
+  border-bottom: 1px solid rgba(177, 58, 31, 0.4);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.paper.orientation-landscape.style-genkouyoushi::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 85%;
+  aspect-ratio: 21 / 15;
+  background-image:
+    linear-gradient(rgba(177, 58, 31, 0.4) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(177, 58, 31, 0.4) 1px, transparent 1px);
+  background-size: calc(100% / 21) calc(100% / 15);
+  border-right: 1px solid rgba(177, 58, 31, 0.4);
+  border-bottom: 1px solid rgba(177, 58, 31, 0.4);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 3. Airmail */
+.paper.style-airmail {
+  background-color: #f8f9fa;
+}
+.paper.style-airmail::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border: 12px solid transparent;
+  border-image: repeating-linear-gradient(
+      -45deg,
+      #d93838,
+      #d93838 16px,
+      transparent 16px,
+      transparent 32px,
+      #245396 32px,
+      #245396 48px,
+      transparent 48px,
+      transparent 64px
+    )
+    12;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 4. Classic Lines */
+.paper.style-lines {
+  background-color: #f2f6fc;
+  background-image: linear-gradient(
+    rgba(100, 150, 200, 0.2) 1px,
+    transparent 1px
+  );
+  background-size: 100% 2.5rem;
+  background-position: 0 4rem; /* Starts below the margin */
+}
+.paper.style-lines::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 80px;
+  width: 2px;
+  background: rgba(220, 80, 80, 0.25);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 5. Plain Washi */
+.paper.style-plain {
+  background-color: #fcfcfc;
+}
+
+/* Draggable Textbox and Shapes */
+.draggable-wrapper {
+  position: absolute;
+  display: inline-flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.drag-header {
+  display: flex;
+  width: 100%;
+  opacity: 0;
+  transition: opacity 0.2s;
+  position: absolute;
+  top: -24px;
+  left: 0;
+  right: 0;
+}
+
+.draggable-wrapper:hover .drag-header {
+  opacity: 1;
+}
+
+.drag-handle {
+  height: 24px;
+  background: rgba(0, 0, 0, 0.05);
+  cursor: -webkit-grab;
+  cursor: grab;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 4px 0 0 0;
+  color: var(--text-secondary);
+  -webkit-backdrop-filter: blur(4px);
+          backdrop-filter: blur(4px);
+  flex: 1 1;
+}
+
+.drag-handle:active {
+  cursor: -webkit-grabbing;
+  cursor: grabbing;
+}
+
+.delete-btn {
+  height: 24px;
+  width: 24px;
+  background: rgba(220, 50, 50, 0.8);
+  color: white;
+  border: none;
+  border-radius: 0 4px 0 0;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.2s;
+}
+
+.delete-btn:hover {
+  background: rgba(255, 50, 50, 1);
+}
+
+.letter-input {
+  width: 400px;
+  height: 200px;
+  background: transparent;
+  border: 1px dashed transparent;
+  resize: both;
+  font-family: inherit;
+  font-size: 1.3rem;
+  line-height: 2.5rem;
+  outline: none;
+  z-index: 1;
+  position: relative;
+  transition:
+    opacity 0.8s ease,
+    border-color 0.2s;
+  padding: 0.5rem;
+}
+
+.letter-input:focus,
+.draggable-wrapper:hover .letter-input,
+.draggable-wrapper.selected .letter-input {
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.draggable-wrapper.selected .letter-input {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.letter-input.style-vertical {
+  writing-mode: vertical-rl;
+  height: 400px;
+  width: 200px;
+}
+
+.letter-input::placeholder {
+  color: rgba(0, 0, 0, 0.2);
+}
+
+.letter-input.hidden-text {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.shape-wrapper {
+  width: 120px;
+  height: 120px;
+  resize: both;
+  overflow: hidden;
+  position: relative;
+  border: 1px dashed transparent;
+  padding: 4px;
+  transition: border-color 0.2s;
+}
+
+.shape-wrapper:hover,
+.draggable-wrapper.selected .shape-wrapper {
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.convert-btn-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2rem;
+  position: relative;
+  z-index: 10;
+}
+
+.convert-btn {
+  background: var(--text-primary);
+  color: var(--paper-bg);
+  border: none;
+  border-radius: 30px;
+  padding: 14px 36px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: inherit;
+  box-shadow: var(--shadow-md);
+  font-weight: 500;
+}
+
+.convert-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.convert-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.handwriting-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 1.5s ease 0.5s;
+  padding: 0.5rem;
+}
+
+.handwriting-svg.visible {
+  opacity: 1;
+}
+
+.handwriting-svg svg {
+  width: 100%;
+  height: 100%;
+}
+
+.handwriting-svg svg path {
+  fill: none !important;
+  stroke: currentColor !important;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+}
+
+.handwriting-svg svg text:first-of-type,
+.handwriting-svg svg text:first-of-type tspan {
+  fill: currentColor !important;
+}
+
+.handwriting-editor {
+  position: relative;
+  border: 1px dashed transparent;
+  padding: 2px;
+  transition: border-color 0.2s;
+}
+
+.draggable-wrapper.selected .handwriting-editor,
+.handwriting-editor:hover {
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.handwriting-editor svg {
+  overflow: visible;
+}
+
+.handwriting-editor path {
+  cursor: default;
+}
+
+.handwriting-editor.eraser-mode path {
+  cursor: cell;
+}
+
+/* Loading overlay for scan */
+.loading-overlay {
+  margin-top: 1.5rem;
+  font-size: 1rem;
+  opacity: 0.9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

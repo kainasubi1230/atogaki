@@ -83,6 +83,7 @@ class StyleCoverageResponse(BaseModel):
     missing_hiragana: str
     missing_katakana: str
     missing_kanji_core: str
+    missing_latin: str = ""
 
 
 class GenerateRequest(BaseModel):

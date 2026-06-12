@@ -1053,6 +1053,10 @@ def _trajectory_from_exemplar(
     scale_x_bias = max(0.82, min(1.18, float(style_cfg.get("scale_x", 1.0)))) if style_cfg else 1.0
     scale_y_bias = max(0.82, min(1.18, float(style_cfg.get("scale_y", 1.0)))) if style_cfg else 1.0
     width_scale = max(0.85, min(1.25, float(style_cfg.get("width_scale", 1.0)))) if style_cfg else 1.0
+    rot_bias_deg = max(-3.0, min(3.0, float(style_cfg.get("rot_bias_deg", 0.0)))) if style_cfg else 0.0
+    shear_x = max(-0.05, min(0.05, float(style_cfg.get("shear_x", 0.0)))) if style_cfg else 0.0
+    shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
+    jitter_scale = max(0.82, min(1.20, float(style_cfg.get("jitter_scale", 1.0)))) if style_cfg else 1.0
 
     for char in text:
         is_katakana = _is_katakana_char(char)
@@ -1122,10 +1126,31 @@ def _trajectory_from_exemplar(
         char_h = span_y * scale_y
         base_y = y_offset + (target_h - char_h) * 0.5
 
+        rot = (rot_bias_deg + rng.uniform(-1.2, 1.2) * (0.55 + 0.35 * jitter_scale)) * 3.141592653589793 / 180.0
+        cr = cos(rot)
+        sr = sin(rot)
+        center_x = x_offset + char_w * 0.5
+        center_y = base_y + char_h * 0.5
+
         transformed: list[tuple[float, float, str, int]] = []
+        stroke_phase = rng.uniform(0.0, 6.283185307179586)
         for lx, ly, pen, width in local:
             tx = x_offset + (lx - min_x) * scale_x
             ty = base_y + (ly - min_y) * scale_y
+            rel_x = tx - center_x
+            rel_y = ty - center_y
+            # Apply the learned handwriting profile as a gentle affine style
+            # transfer. This lets small user samples affect unseen characters
+            # without replacing their readable base shape.
+            rel_x = rel_x + shear_x * rel_y
+            rel_y = rel_y + shear_y * rel_x
+            tx = center_x + rel_x * cr - rel_y * sr
+            ty = center_y + rel_x * sr + rel_y * cr
+            if pen == "down" and jitter_scale > 0.82:
+                phase = (lx + ly) * 0.065 + stroke_phase
+                amp = min(0.16, max(0.0, (jitter_scale - 0.96) * 0.24))
+                tx += sin(phase) * amp
+                ty += cos(phase * 0.83) * amp * 0.7
             new_width = max(1, min(4, int(round(width * width_scale))))
             transformed.append((tx, ty, pen, new_width))
 

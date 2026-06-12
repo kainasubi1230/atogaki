@@ -162,6 +162,29 @@ docker compose run --rm trainer python trainer/main.py train-base --dataset stor
 - `POST /generate` は `BASE_MODEL_PATH`（デフォルト: `./storage/models/base_model.pt`）を参照します。
 - モデルファイルが存在しない場合はフォールバック生成になります。公開データを使う場合は `train-base` を最低1回実行してください。
 
+## 英字・数字データセット
+
+英語入力用の `A-Z` / `a-z` / `0-9` 軌跡データを生成:
+
+```bash
+python trainer/main.py build-latin-dataset \
+  --output storage/base/base_dataset_latin_v1.jsonl \
+  --variants-per-char 48 \
+  --replace
+```
+
+Docker/GPU 構成で再生成する場合:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm trainer \
+  python trainer/main.py build-latin-dataset \
+    --output storage/base/base_dataset_latin_v1.jsonl \
+    --variants-per-char 48 \
+    --replace
+```
+
+`api` は `storage/base/base_dataset_latin_v1.jsonl` をランタイム描画に読み込みます。base model にも英字 exemplar を入れたい場合は、この JSONL を学習用データに結合してから `train-base` を実行してください。
+
 ## 常用漢字フル対応データセット（KanjiVG）
 
 常用漢字 2136 字をまとめて取り込む:

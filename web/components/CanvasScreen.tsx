@@ -29,6 +29,336 @@ type ParsedHandwriting = {
   height: number;
 };
 
+const SMALL_KANA_CHARS = new Set(
+  Array.from("ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"),
+);
+const SMALL_YOON_CHARS = new Set(Array.from("ゃゅょャュョ"));
+const SMALL_SOKUON_CHARS = new Set(Array.from("っッ"));
+const KATAKANA_CHARS = new Set(Array.from("ァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"));
+const KANA_CHAR_RE = /[\u3041-\u3096\u30A1-\u30FA]/;
+const KATAKANA_CHAR_RE = /[\u30A1-\u30FA]/;
+const SMALL_PUNCT_CHARS = new Set(Array.from("。、，．.,・"));
+const MEDIUM_PUNCT_CHARS = new Set(Array.from("：；:;…"));
+const TALL_PUNCT_CHARS = new Set(Array.from("！？!?"));
+const BRACKET_PUNCT_CHARS = new Set(Array.from("「」『』（）()【】[]［］{}｛｝〈〉《》〔〕"));
+const DASH_PUNCT_CHARS = new Set(Array.from("ー〜—-－"));
+const OPERATOR_PUNCT_CHARS = new Set(Array.from("／/＼\\｜|＋+=＝＊*＆&％%＃#＠@￥¥$"));
+const QUOTE_PUNCT_CHARS = new Set(Array.from("“”‘’\"'"));
+const PUNCT_CHARS = new Set([
+  ...SMALL_PUNCT_CHARS,
+  ...MEDIUM_PUNCT_CHARS,
+  ...TALL_PUNCT_CHARS,
+  ...BRACKET_PUNCT_CHARS,
+  ...DASH_PUNCT_CHARS,
+  ...OPERATOR_PUNCT_CHARS,
+  ...QUOTE_PUNCT_CHARS,
+]);
+
+function isSmallKana(ch: string): boolean {
+  return ch.length === 1 && SMALL_KANA_CHARS.has(ch);
+}
+
+function isFullSizeKana(ch: string): boolean {
+  return ch.length === 1 && KANA_CHAR_RE.test(ch) && !SMALL_KANA_CHARS.has(ch);
+}
+
+function isSmallKatakana(ch: string): boolean {
+  return ch.length === 1 && KATAKANA_CHARS.has(ch);
+}
+
+function isPunctuation(ch: string): boolean {
+  return ch.length === 1 && PUNCT_CHARS.has(ch);
+}
+
+function isPunctuationOnlyText(text: string): boolean {
+  const chars = Array.from(text.trim()).filter((ch) => ch.trim() !== "");
+  return chars.length > 0 && chars.every((ch) => isPunctuation(ch));
+}
+
+function isAsciiRenderableText(text: string): boolean {
+  const chars = Array.from(text.trim()).filter((ch) => ch.trim() !== "");
+  return chars.length > 0 && chars.every((ch) => {
+    const code = ch.charCodeAt(0);
+    return code >= 0x20 && code <= 0x7e;
+  });
+}
+
+function isGeneratedPunctuationItem(item: CanvasItem): boolean {
+  return item.type === "text" && item.id.includes("_text_punct_") && isPunctuationOnlyText(item.text);
+}
+
+function isFullSizeKatakana(ch: string): boolean {
+  return ch.length === 1 && KATAKANA_CHAR_RE.test(ch) && !SMALL_KANA_CHARS.has(ch);
+}
+
+function smallKanaScale(ch: string): number {
+  if (SMALL_YOON_CHARS.has(ch)) {
+    return 0.62;
+  }
+  return 0.5;
+}
+
+function buildPunctuationPaths(ch: string): ParsedHandwriting | null {
+  const mk = (paths: Array<[string, number]>, viewBox: string, width: number, height: number): ParsedHandwriting => ({
+    paths: paths.map(([d, strokeWidth], idx) => ({
+      id: `punct_${ch}_${idx}`,
+      d,
+      strokeWidth,
+    })),
+    viewBox,
+    width,
+    height,
+  });
+
+  if (ch === "。" || ch === "．" || ch === ".") {
+    return mk(
+      [["M6.4 4.0 C6.2 5.7 5.1 6.6 3.7 6.4 C2.1 6.2 1.3 5.0 1.6 3.6 C1.9 2.1 3.1 1.3 4.6 1.6 C5.8 1.8 6.6 2.8 6.4 4.0", 1.18]],
+      "0 0 8 8",
+      8,
+      8,
+    );
+  }
+  if (ch === "、" || ch === "，" || ch === ",") {
+    return mk(
+      [["M3.9 3.4 C4.2 6.0 5.0 8.5 6.5 10.7", 1.45]],
+      "0 0 9 12",
+      9,
+      12,
+    );
+  }
+  if (ch === "・") {
+    return mk(
+      [["M4.7 3.9 C4.7 5.1 3.7 5.8 2.7 5.5 C1.7 5.2 1.4 4.0 2.1 3.2 C2.9 2.3 4.3 2.7 4.7 3.9", 1.05]],
+      "0 0 6 7",
+      6,
+      7,
+    );
+  }
+  if (ch === "！" || ch === "!") {
+    return mk(
+      [
+        ["M9 2 C8.8 18 8.0 34 7.0 50", 2],
+        ["M7.6 61 C10.0 60.8 11.2 63.2 9.6 65.0 C7.8 66.8 5.5 65.4 6.0 63.3 C6.2 62.1 6.8 61.4 7.6 61", 1.5],
+      ],
+      "0 0 18 68",
+      18,
+      68,
+    );
+  }
+  if (ch === "？" || ch === "?") {
+    return mk(
+      [
+        ["M7 18 C10 6 29 6 29 20 C29 31 17 32 17 45", 2],
+        ["M17 61 C19.6 60.8 20.9 63.2 19.1 65.1 C17.1 67.1 14.8 65.4 15.4 63.1 C15.6 62.0 16.2 61.3 17 61", 1.5],
+      ],
+      "0 0 36 68",
+      36,
+      68,
+    );
+  }
+  if (ch === "ー" || ch === "〜") {
+    const path = ch === "〜" ? "M3 11 C12 4 22 18 34 11" : "M3 10 C13 11 24 10 35 10";
+    return mk([[path, 2]], "0 0 38 22", 38, 22);
+  }
+  if (ch === "…" || ch === "：" || ch === ":" || ch === "；" || ch === ";") {
+    const dots = ch === "…" ? [[8, 14], [20, 14], [32, 14]] : [[20, 8], [20, 28]];
+    const paths: Array<[string, number]> = dots.map(([x, y]) => [
+      `M${x + 2} ${y} C${x + 2} ${y + 2.2} ${x - 1.5} ${y + 2.3} ${x - 2} ${y} C${x - 2.2} ${y - 2.0} ${x + 1.5} ${y - 2.2} ${x + 2} ${y}`,
+      1.4,
+    ]);
+    if (ch === "；" || ch === ";") {
+      paths.push(["M22 28 C20 32 18 34 15 36", 1.2]);
+    }
+    return mk(paths, "0 0 40 38", 40, 38);
+  }
+  if (BRACKET_PUNCT_CHARS.has(ch)) {
+    const left = ch === "「" || ch === "『" || ch === "（" || ch === "(";
+    const round = ch === "（" || ch === "）" || ch === "(" || ch === ")";
+    if (round) {
+      const d = left ? "M22 4 C8 18 8 48 22 64" : "M6 4 C20 18 20 48 6 64";
+      return mk([[d, 1.8]], "0 0 28 68", 28, 68);
+    }
+    const d = left ? "M24 5 L6 5 L6 64" : "M5 64 L23 64 L23 5";
+    return mk([[d, 1.8]], "0 0 28 68", 28, 68);
+  }
+  return null;
+}
+
+function buildPunctuationSvg(ch: string, viewBox: string, paths: HandwritingPath[]): string {
+  const pathSvg = paths
+    .map(
+      (p) =>
+        `<path d="${p.d}" fill="none" stroke="currentColor" stroke-width="${p.strokeWidth}" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`,
+    )
+    .join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">${pathSvg}</svg>`;
+}
+
+function PunctuationMark({ ch, color }: { ch: string; color: string }) {
+  if (ch === "。" || ch === "．" || ch === ".") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 18 18"
+        style={{
+          position: "absolute",
+          left: "16%",
+          top: "24%",
+          width: "62%",
+          height: "62%",
+          overflow: "visible",
+          pointerEvents: "none",
+        }}
+      >
+        <path
+          d="M12.4 7.5 C12.0 10.6 9.8 12.7 7.0 12.1 C4.6 11.6 3.5 9.5 4.1 7.1 C4.8 4.7 7.1 3.6 9.4 4.2 C11.4 4.7 12.7 5.9 12.4 7.5"
+          fill="none"
+          stroke={color}
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (ch === "・") {
+    return (
+      <span
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: "35%",
+          top: "35%",
+          width: "30%",
+          height: "30%",
+          border: `1.4px solid ${color}`,
+          borderRadius: "50%",
+          boxSizing: "border-box",
+          display: "block",
+          pointerEvents: "none",
+        }}
+      />
+    );
+  }
+  if (ch === "、" || ch === "，" || ch === ",") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 18 28"
+        style={{
+          position: "absolute",
+          left: "26%",
+          top: "5%",
+          width: "58%",
+          height: "86%",
+          overflow: "visible",
+          pointerEvents: "none",
+        }}
+      >
+        <path
+          d="M5.0 4.2 C6.4 10.5 8.8 17.2 13.5 23.2"
+          fill="none"
+          stroke={color}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (ch === "！" || ch === "!") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 22 58"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible", pointerEvents: "none" }}
+      >
+        <path d="M12.2 4.5 C11.4 17.0 10.8 29.5 9.4 41.0" fill="none" stroke={color} strokeWidth="2.1" strokeLinecap="round" />
+        <path d="M9.5 50.5 C11.8 50.1 13.0 52.4 11.2 54.0 C9.4 55.5 7.2 54.1 7.7 52.1 C8.0 51.0 8.6 50.6 9.5 50.5" fill="none" stroke={color} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (ch === "？" || ch === "?") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 34 58"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible", pointerEvents: "none" }}
+      >
+        <path d="M7.2 16.5 C8.8 6.2 25.4 4.7 27.0 16.6 C28.3 26.0 17.3 27.1 16.1 37.4" fill="none" stroke={color} strokeWidth="2.0" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15.5 50.2 C18.0 49.8 19.1 52.1 17.3 53.9 C15.6 55.5 13.1 54.2 13.7 52.0 C14.0 50.9 14.6 50.4 15.5 50.2" fill="none" stroke={color} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  return null;
+}
+
+function handwritingBoxSize(item: CanvasItem): { width: number; height: number } {
+  const width = item.boxWidth ?? 80;
+  const height = item.boxHeight ?? 56;
+  if (!isPunctuation(item.text)) {
+    return { width, height };
+  }
+  if (item.type === "handwriting") {
+    if (SMALL_PUNCT_CHARS.has(item.text)) {
+      if (item.text === "、" || item.text === "，" || item.text === ",") {
+        return { width: Math.max(12, width), height: Math.max(20, height) };
+      }
+      return { width: Math.max(18, width), height: Math.max(18, height) };
+    }
+    return { width, height };
+  }
+  const basis = Math.max(width, height);
+  if (SMALL_PUNCT_CHARS.has(item.text)) {
+    if (item.text === "、" || item.text === "，" || item.text === ",") {
+      const h = Math.max(5, Math.min(11, basis * 0.2));
+      return { width: Math.max(4, h * 0.55), height: h };
+    }
+    const h = Math.max(4, Math.min(8, basis * 0.14));
+    return { width: h, height: h };
+  }
+  if (MEDIUM_PUNCT_CHARS.has(item.text)) {
+    const h = Math.max(8, Math.min(14, basis * 0.26));
+    return { width: Math.max(8, h * 1.15), height: h };
+  }
+  if (DASH_PUNCT_CHARS.has(item.text)) {
+    const h = Math.max(5, Math.min(10, basis * 0.18));
+    return { width: Math.max(18, basis * 0.58), height: h };
+  }
+  if (TALL_PUNCT_CHARS.has(item.text)) {
+    const h = Math.max(18, Math.min(34, basis * 0.72));
+    return { width: Math.max(8, h * 0.28), height: h };
+  }
+  if (BRACKET_PUNCT_CHARS.has(item.text)) {
+    const h = Math.max(18, Math.min(36, basis * 0.78));
+    return { width: Math.max(8, h * 0.28), height: h };
+  }
+  return { width, height };
+}
+
+function punctuationRenderItem(item: CanvasItem): CanvasItem {
+  if (
+    item.type !== "handwriting" ||
+    !isPunctuation(item.text) ||
+    (item.paths?.length ?? 0) > 0 ||
+    Boolean(item.svg)
+  ) {
+    return item;
+  }
+  const draft = buildPunctuationPaths(item.text);
+  const size = handwritingBoxSize(item);
+  return {
+    ...item,
+    type: "handwriting",
+    svg: draft ? buildPunctuationSvg(item.text, draft.viewBox, draft.paths) : "",
+    paths: draft?.paths ?? [],
+    svgViewBox: draft?.viewBox ?? item.svgViewBox ?? "0 0 10 10",
+    boxWidth: size.width,
+    boxHeight: size.height,
+    isConverted: true,
+  };
+}
+
 function parseSvgDimensions(svg: string): { width: number; height: number; viewBox: string } | null {
   try {
     const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
@@ -450,13 +780,17 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   async function handleConvert() {
     const textsToConvert = items.filter(
-      (it) => it.type === "text" && it.text.trim() !== "" && !it.isConverted,
+      (it) =>
+        it.type === "text" &&
+        it.text.trim() !== "" &&
+        !it.isConverted,
     );
     if (textsToConvert.length === 0) return;
 
     setIsProcessing(true);
     try {
-      if (!token || !userId || !styleId) {
+      const canConvertWithoutStyle = textsToConvert.every((item) => isAsciiRenderableText(item.text));
+      if (!token || !userId || (!styleId && !canConvertWithoutStyle)) {
         alert("スタイル準備ができていません。先に画像アップロードをやり直してください。");
         return;
       }
@@ -465,8 +799,13 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       let convertedCount = 0;
       let failedCount = 0;
       let lastErrorDetail = "";
+      const useRuntimePunctuation = true;
       for (const item of items) {
-        if (item.type !== "text" || item.text.trim() === "" || item.isConverted) {
+        if (
+          item.type !== "text" ||
+          item.text.trim() === "" ||
+          item.isConverted
+        ) {
           newItems.push(item);
           continue;
         }
@@ -476,24 +815,115 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
         const baseFont = item.fontSize ?? 24;
         const lineHeightPx = (item.lineHeight ?? 1.5) * baseFont;
         const letterSpace = item.letterSpacing ?? 0;
+        const generationPromises = new Map<string, ReturnType<typeof postJSON>>();
+        lines.forEach((line, lineIndex) => {
+          Array.from(line).forEach((ch, charIndex) => {
+            if (ch.trim() === "" || (isPunctuation(ch) && !useRuntimePunctuation)) {
+              return;
+            }
+            generationPromises.set(
+              `${lineIndex}:${charIndex}`,
+              postJSON(
+                "/generate",
+                {
+                  user_id: userId,
+                  style_id: styleId ?? 0,
+                  text: ch,
+                  purpose: "accessibility",
+                },
+                token,
+              ),
+            );
+          });
+        });
         let currentY = item.y;
-        for (const line of lines) {
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          const line = lines[lineIndex];
+          const chars = Array.from(line);
           let currentX = item.x;
-          for (const ch of line) {
+          let previousPlacedChar = "";
+          for (let charIndex = 0; charIndex < chars.length; charIndex += 1) {
+            const ch = chars[charIndex];
             if (ch.trim() === "") {
               currentX += baseFont * 0.6 + letterSpace;
+              previousPlacedChar = "";
               continue;
             }
-            const result = await postJSON(
-              "/generate",
-              {
-                user_id: userId,
-                style_id: styleId,
+            if (isPunctuation(ch) && !useRuntimePunctuation) {
+              const targetH = Math.max(22, baseFont * 1.55);
+              let boxW = baseFont * 0.45;
+              let boxH = baseFont * 0.45;
+              let drawX = currentX + baseFont * 0.5;
+              let drawY = currentY + targetH * 0.64;
+              let advanceW = baseFont * 0.34;
+              let punctFontSize = Math.max(12, Math.min(baseFont * 0.7, boxH));
+              if (ch === "、" || ch === "，" || ch === ",") {
+                boxW = Math.max(14, baseFont * 0.46);
+                boxH = Math.max(22, baseFont * 0.78);
+                drawX = currentX + baseFont * 0.3;
+                drawY = currentY + targetH * 0.36;
+                advanceW = baseFont * 0.24;
+                punctFontSize = Math.max(14, Math.min(baseFont * 0.82, boxH));
+              } else if (ch === "。" || ch === "．" || ch === "." || ch === "・") {
+                boxW = Math.max(14, baseFont * 0.46);
+                boxH = Math.max(14, baseFont * 0.46);
+                drawX = currentX + baseFont * 0.18;
+                drawY = currentY + targetH * 0.47;
+                advanceW = baseFont * 0.18;
+                punctFontSize = Math.max(12, Math.min(baseFont * 0.58, boxH));
+              } else if (ch === "…" || ch === "：" || ch === ":" || ch === "；" || ch === ";") {
+                boxW = baseFont * 0.55;
+                boxH = baseFont * 0.34;
+                drawX = currentX + baseFont * 0.2;
+                drawY = currentY + targetH * 0.46;
+                advanceW = baseFont * 0.58;
+              } else if (ch === "ー" || ch === "〜") {
+                boxW = baseFont * 0.78;
+                boxH = baseFont * 0.24;
+                drawX = currentX + baseFont * 0.08;
+                drawY = currentY + targetH * 0.48;
+                advanceW = baseFont * 0.82;
+              } else if (ch === "！" || ch === "!" || ch === "？" || ch === "?") {
+                boxW = baseFont * 0.36;
+                boxH = targetH * 0.82;
+                drawX = currentX + baseFont * 0.26;
+                drawY = currentY + targetH * 0.08;
+                advanceW = baseFont * 0.48;
+              } else if (BRACKET_PUNCT_CHARS.has(ch)) {
+                boxW = baseFont * 0.36;
+                boxH = targetH * 0.9;
+                drawX = currentX + baseFont * 0.12;
+                drawY = currentY + targetH * 0.04;
+                advanceW = baseFont * 0.48;
+              }
+              generatedChars.push({
+                id: `${item.id}_text_punct_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                type: "text",
+                x: drawX,
+                y: drawY,
                 text: ch,
-                purpose: "accessibility",
-              },
-              token,
-            );
+                svg: "",
+                color: item.color,
+                isConverted: true,
+                fontSize: punctFontSize,
+                letterSpacing: 0,
+                lineHeight: 1,
+                paths: [],
+                svgViewBox: "0 0 10 10",
+                boxWidth: boxW,
+                boxHeight: boxH,
+              });
+              convertedCount += 1;
+              currentX += advanceW + Math.max(0.5, letterSpace * 0.35);
+              previousPlacedChar = ch;
+              continue;
+            }
+            const result = await generationPromises.get(`${lineIndex}:${charIndex}`);
+            if (!result) {
+              failedCount += 1;
+              lastErrorDetail = "missing_generation_job";
+              continue;
+            }
             if (result.status !== 200) {
               failedCount += 1;
               const body = result.body as { detail?: string };
@@ -512,12 +942,119 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
             const refW = parsed?.width ?? fallbackDims?.width ?? baseFont;
             const refH = parsed?.height ?? fallbackDims?.height ?? baseFont;
             const ratio = refW / Math.max(1, refH);
-            const targetW = Math.max(18, Math.min(220, targetH * ratio));
+            let targetW = Math.max(18, Math.min(220, targetH * ratio));
+            let boxH = targetH;
+            let drawX = currentX;
+            let drawY = currentY;
+            let advanceW = targetW;
+            let afterGap = Math.max(2, letterSpace);
+            if (isSmallKana(ch)) {
+              // Small kana should occupy a quarter of the normal character box.
+              const scale = smallKanaScale(ch);
+              targetW *= scale;
+              const smallH = targetH * scale;
+              advanceW = targetW;
+              let shiftX = targetW * 0.22;
+              let shiftY = smallH * 0.28;
+              const smallKatakana = isSmallKatakana(ch);
+
+              if (previousPlacedChar && isFullSizeKana(previousPlacedChar)) {
+                const prevFullKatakana = isFullSizeKatakana(previousPlacedChar);
+                if (SMALL_YOON_CHARS.has(ch)) {
+                  if (smallKatakana && prevFullKatakana) {
+                    shiftX = -targetW * 0.52;
+                    shiftY = smallH * 0.5;
+                    advanceW = targetW * 0.72;
+                    afterGap = Math.max(2, letterSpace * 0.75);
+                  } else {
+                    shiftX = -targetW * 0.3;
+                    shiftY = smallH * 0.46;
+                    advanceW = targetW * 0.7;
+                  }
+                } else if (SMALL_SOKUON_CHARS.has(ch)) {
+                  if (smallKatakana && prevFullKatakana) {
+                    shiftX = -targetW * 0.42;
+                    shiftY = smallH * 0.48;
+                    advanceW = targetW * 0.68;
+                    afterGap = Math.max(2, letterSpace * 0.7);
+                  } else {
+                    shiftX = -targetW * 0.18;
+                    shiftY = smallH * 0.4;
+                    advanceW = targetW * 0.72;
+                  }
+                } else {
+                  if (smallKatakana && prevFullKatakana) {
+                    shiftX = -targetW * 0.34;
+                    shiftY = smallH * 0.44;
+                    advanceW = targetW * 0.7;
+                    afterGap = Math.max(2, letterSpace * 0.7);
+                  } else {
+                    shiftX = -targetW * 0.1;
+                    shiftY = smallH * 0.34;
+                    advanceW = targetW * 0.76;
+                  }
+                }
+                if (smallKatakana) {
+                  shiftY += smallH * 0.08;
+                }
+              }
+
+              drawX += shiftX;
+              drawY += shiftY;
+            } else if (isPunctuation(ch)) {
+              if (SMALL_PUNCT_CHARS.has(ch)) {
+                const punctH = Math.max(4, baseFont * (ch === "、" || ch === "，" || ch === "," ? 0.3 : 0.22));
+                targetW = Math.max(4, punctH * ratio);
+                boxH = punctH;
+                drawX += baseFont * (ch === "、" || ch === "，" || ch === "," ? 0.32 : 0.56);
+                drawY += targetH * (ch === "、" || ch === "，" || ch === "," ? 0.62 : 0.68);
+                advanceW = baseFont * (ch === "、" || ch === "，" || ch === "," ? 0.24 : 0.28);
+                afterGap = Math.max(0.5, letterSpace * 0.25);
+              } else if (MEDIUM_PUNCT_CHARS.has(ch)) {
+                const punctH = Math.max(10, baseFont * 0.42);
+                targetW = Math.max(12, Math.min(baseFont * 0.58, punctH * ratio));
+                boxH = punctH;
+                drawX += baseFont * 0.18;
+                drawY += targetH * 0.38;
+                advanceW = baseFont * 0.55;
+                afterGap = Math.max(1, letterSpace * 0.45);
+              } else if (DASH_PUNCT_CHARS.has(ch)) {
+                boxH = Math.max(8, baseFont * 0.28);
+                targetW = Math.max(baseFont * 0.62, Math.min(baseFont * 0.88, targetH * ratio));
+                drawX += baseFont * 0.04;
+                drawY += targetH * 0.4;
+                advanceW = targetW;
+              } else if (OPERATOR_PUNCT_CHARS.has(ch)) {
+                boxH = targetH * 0.72;
+                targetW = Math.max(baseFont * 0.35, Math.min(baseFont * 0.82, boxH * ratio));
+                drawX += baseFont * 0.06;
+                drawY += targetH * 0.14;
+                advanceW = Math.max(baseFont * 0.48, targetW * 0.86);
+              } else if (QUOTE_PUNCT_CHARS.has(ch)) {
+                boxH = targetH * 0.42;
+                targetW = Math.max(baseFont * 0.16, Math.min(baseFont * 0.42, boxH * ratio));
+                drawX += baseFont * 0.18;
+                drawY += targetH * 0.08;
+                advanceW = baseFont * 0.26;
+              } else if (TALL_PUNCT_CHARS.has(ch)) {
+                boxH = targetH * 0.9;
+                targetW = Math.max(baseFont * 0.26, Math.min(baseFont * 0.5, boxH * ratio));
+                drawX += baseFont * 0.16;
+                drawY += targetH * 0.04;
+                advanceW = baseFont * 0.52;
+              } else if (BRACKET_PUNCT_CHARS.has(ch)) {
+                boxH = targetH * 0.96;
+                targetW = Math.max(baseFont * 0.28, Math.min(baseFont * 0.5, boxH * ratio));
+                drawX += baseFont * 0.08;
+                drawY += targetH * 0.02;
+                advanceW = baseFont * 0.52;
+              }
+            }
             generatedChars.push({
               id: `${item.id}_hw_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
               type: "handwriting",
-              x: currentX,
-              y: currentY,
+              x: drawX,
+              y: drawY,
               text: ch,
               svg: body.svg,
               color: item.color,
@@ -525,10 +1062,11 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               paths: parsed?.paths ?? [],
               svgViewBox: parsed?.viewBox ?? fallbackDims?.viewBox ?? "0 0 100 100",
               boxWidth: targetW,
-              boxHeight: targetH,
+              boxHeight: isSmallKana(ch) ? targetH * smallKanaScale(ch) : boxH,
             });
             convertedCount += 1;
-            currentX += targetW + Math.max(2, letterSpace);
+            currentX += advanceW + afterGap;
+            previousPlacedChar = ch;
           }
           currentY += Math.max(baseFont + 2, lineHeightPx);
         }
@@ -554,7 +1092,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   }
 
   const hasTextToConvert = items.some(
-    (it) => it.type === "text" && it.text.trim() !== "" && !it.isConverted,
+    (it) =>
+      it.type === "text" &&
+      it.text.trim() !== "" &&
+      !it.isConverted,
   );
   const selectedPaperDef = PAPERS.find((p) => p.id === paperStyle) || PAPERS[0];
   const customImageStyle = selectedPaperDef.image
@@ -1021,7 +1562,9 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           }}
           onPointerDown={handlePaperClick}
         >
-          {items.map((item) => (
+          {items.map((rawItem) => {
+            const item = punctuationRenderItem(rawItem);
+            return (
             <div
               key={item.id}
               className={`draggable-wrapper ${selectedId === item.id ? "selected" : ""}`}
@@ -1063,9 +1606,41 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
               <div style={{ position: "relative" }}>
                 {item.type === "text" ? (
+                  isGeneratedPunctuationItem(item) ? (
+                    <div
+                      className="letter-input"
+                      style={{
+                        color: item.color,
+                        fontSize: item.fontSize ? `${item.fontSize}px` : undefined,
+                        lineHeight: 1,
+                        letterSpacing: item.letterSpacing !== undefined ? `${item.letterSpacing}px` : undefined,
+                        width: `${Math.max(18, item.boxWidth ?? item.fontSize ?? 18)}px`,
+                        height: `${Math.max(18, item.boxHeight ?? item.fontSize ?? 18)}px`,
+                        minWidth: 0,
+                        minHeight: 0,
+                        resize: "none",
+                        overflow: "visible",
+                        padding: 0,
+                        borderColor: "transparent",
+                        fontWeight: 800,
+                        textAlign: "center",
+                        textShadow: `0 0 0 ${item.color}, 0.35px 0 0 ${item.color}`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      {SMALL_PUNCT_CHARS.has(item.text) || TALL_PUNCT_CHARS.has(item.text) ? (
+                        <PunctuationMark ch={item.text} color={item.color} />
+                      ) : (
+                        item.text
+                      )}
+                    </div>
+                  ) : (
                   <>
                     <textarea
-                      className={`letter-input style-${paperStyle} ${item.isConverted ? "hidden-text" : ""}`}
+                      className={`letter-input style-${paperStyle} ${item.isConverted && !isPunctuationOnlyText(item.text) ? "hidden-text" : ""}`}
                       style={{
                         color: item.color,
                         fontSize: item.fontSize
@@ -1105,18 +1680,19 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                       />
                     )}
                   </>
+                  )
                 ) : item.type === "handwriting" ? (
                   <div
                     className={`handwriting-editor ${selectedId === item.id ? "selected" : ""} ${activeTool === "eraser" ? "eraser-mode" : ""}`}
                     style={{
-                      width: `${item.boxWidth ?? 80}px`,
-                      height: `${item.boxHeight ?? 56}px`,
+                      width: `${handwritingBoxSize(item).width}px`,
+                      height: `${handwritingBoxSize(item).height}px`,
                     }}
                   >
                     {(item.paths ?? []).length === 0 ? (
                       <div
                         className="handwriting-svg visible"
-                        style={{ color: item.color, position: "relative", inset: 0, padding: 0 }}
+                        style={{ color: item.color, position: "absolute", inset: 0, padding: 0, width: "100%", height: "100%" }}
                         dangerouslySetInnerHTML={{ __html: item.svg }}
                       />
                     ) : (
@@ -1133,6 +1709,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                             fill="none"
                             stroke={item.color}
                             strokeWidth={p.strokeWidth}
+                            vectorEffect="non-scaling-stroke"
                             strokeLinecap="round"
                             strokeLinejoin="round"
                             onPointerDown={(e) => {
@@ -1163,7 +1740,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                 )}
               </div>
             </div>
-          ))}
+          );})}
         </div>
 
         <div

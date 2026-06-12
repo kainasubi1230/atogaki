@@ -25,6 +25,25 @@ _HIRAGANA_STROKE_RANGE: dict[str, tuple[int, int]] = {
     "う": (2, 3),
     "え": (2, 4),
     "お": (3, 5),
+    "く": (1, 2),
+    "ほ": (3, 5),
+    "れ": (1, 3),
+    "を": (2, 4),
+    "す": (1, 3),
+    "へ": (1, 2),
+    "も": (2, 4),
+    "ろ": (1, 2),
+}
+_KATAKANA_STROKE_RANGE: dict[str, tuple[int, int]] = {
+    "ア": (2, 2), "イ": (2, 2), "ウ": (3, 3), "エ": (3, 3), "オ": (3, 3),
+    "カ": (2, 2), "キ": (3, 3), "ク": (2, 2), "ケ": (3, 3), "コ": (2, 2),
+    "サ": (3, 3), "シ": (3, 3), "ス": (2, 2), "セ": (2, 2), "ソ": (2, 2),
+    "タ": (3, 3), "チ": (3, 3), "ツ": (3, 3), "テ": (3, 3), "ト": (2, 2),
+    "ナ": (2, 2), "ニ": (2, 2), "ヌ": (2, 2), "ネ": (4, 4), "ノ": (1, 1),
+    "ハ": (2, 2), "ヒ": (2, 2), "フ": (1, 1), "ヘ": (1, 1), "ホ": (4, 4),
+    "マ": (2, 2), "ミ": (3, 3), "ム": (2, 2), "メ": (2, 2), "モ": (3, 3),
+    "ヤ": (2, 2), "ユ": (2, 2), "ヨ": (3, 3), "ラ": (2, 2), "リ": (2, 2),
+    "ル": (2, 2), "レ": (1, 1), "ロ": (3, 3), "ワ": (2, 2), "ヲ": (3, 3), "ン": (2, 2),
 }
 
 
@@ -194,6 +213,12 @@ def _sequence_quality(seq: list[list[float]], ch: str, source: str) -> float:
 
     if _is_hiragana_char(ch):
         stroke_range = _HIRAGANA_STROKE_RANGE.get(ch)
+        if stroke_range is not None:
+            lo, hi = stroke_range
+            if stroke_count < lo or stroke_count > hi:
+                return float("-inf")
+    if _is_katakana_char(ch):
+        stroke_range = _KATAKANA_STROKE_RANGE.get(ch)
         if stroke_range is not None:
             lo, hi = stroke_range
             if stroke_count < lo or stroke_count > hi:

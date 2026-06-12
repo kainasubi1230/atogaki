@@ -18,16 +18,20 @@ from .storage import get_storage
 HIRAGANA_TARGET = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
 KATAKANA_TARGET = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
 KANJI_CORE_TARGET = "日月火水木金土山川田天気学年人大小中上下左右先生今来行見話書読食飲休車電駅校友名本語文字漢"
+LATIN_TARGET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 HIRAGANA_TARGET_SET = set(HIRAGANA_TARGET)
 KATAKANA_TARGET_SET = set(KATAKANA_TARGET)
 KANJI_CORE_TARGET_SET = set(KANJI_CORE_TARGET)
+LATIN_TARGET_SET = set(LATIN_TARGET)
 
 # Hiragana is the main focus; keep katakana/kanji covered but lighter.
 BOOTSTRAP_CAP_HIRAGANA = 18
 BOOTSTRAP_CAP_KATAKANA = 10
 BOOTSTRAP_CAP_KANJI = 6
+BOOTSTRAP_CAP_LATIN = 8
 
 BOOTSTRAP_DATASETS = [
+    "storage/base/base_dataset_latin_v1.jsonl",
     "storage/base/base_dataset_handwritten_mix_v1.jsonl",
     "storage/base/base_dataset_hiragana_k49_mix.jsonl",
     "storage/base/base_dataset_katakana_handwritten_like_v8best.jsonl",
@@ -129,6 +133,8 @@ def _bootstrap_cap_for_char(ch: str) -> int:
         return BOOTSTRAP_CAP_KATAKANA
     if ch in KANJI_CORE_TARGET_SET:
         return BOOTSTRAP_CAP_KANJI
+    if ch in LATIN_TARGET_SET:
+        return BOOTSTRAP_CAP_LATIN
     return BOOTSTRAP_CAP_KANJI
 
 
@@ -138,8 +144,8 @@ def _collect_bootstrap_samples(
     user_id: int,
     existing_chars: set[str],
 ) -> list[dict]:
-    # Prioritize hiragana, then katakana, then practical core kanji.
-    target_chars = list(HIRAGANA_TARGET + KATAKANA_TARGET + KANJI_CORE_TARGET)
+    # Prioritize hiragana, then katakana, practical core kanji, and Latin.
+    target_chars = list(HIRAGANA_TARGET + KATAKANA_TARGET + KANJI_CORE_TARGET + LATIN_TARGET)
     needed = [ch for ch in target_chars if ch not in existing_chars]
     if not needed:
         return []

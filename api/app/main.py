@@ -18,7 +18,7 @@ from trainer.public_dataset import _image_to_sequence, _image_to_sequence_contou
 from trainerlib.kana_image import generate_kana_image_best
 from trainerlib.model import generate_trajectory
 from trainerlib.preprocess import preprocess_scan
-from trainerlib.svg import text_to_svg, text_to_svg_readable, trajectory_to_svg
+from trainerlib.svg import text_to_svg, text_to_svg_english, text_to_svg_readable, trajectory_to_svg
 
 from .audit import log_event
 from .database import Base, SessionLocal, engine, get_db
@@ -51,12 +51,17 @@ WATERMARK_TEXT = "AI生成（アクセシビリティ支援）"
 HIRAGANA_TARGET = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
 KATAKANA_TARGET = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
 KANJI_CORE_TARGET = "日月火水木金土山川田天気学年人大小中上下左右先生今来行見話書読食飲休車電駅校友名本語文字漢"
-TARGET_CHARS = HIRAGANA_TARGET + KATAKANA_TARGET + KANJI_CORE_TARGET
+LATIN_TARGET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+TARGET_CHARS = HIRAGANA_TARGET + KATAKANA_TARGET + KANJI_CORE_TARGET + LATIN_TARGET
 RUNTIME_DATASET_FILES = [
+    Path("storage/base/base_dataset_punctuation_v1.jsonl"),
+    Path("storage/base/base_dataset_latin_v1.jsonl"),
     Path("storage/base/base_dataset_runtime_master.jsonl"),
     Path("storage/base/base_dataset_hiragana_images_v2.jsonl"),
     Path("storage/base/base_dataset_katakana_handwritten_like_v8best.jsonl"),
     Path("storage/base/base_dataset_kanjivg_joyo_full_v5.jsonl"),
+    Path("storage/base/base_dataset_kanjivg_extra_v1.jsonl"),
+    Path("storage/base/base_dataset_kanjivg_jinmeiyo_v1.jsonl"),
 ]
 _RUNTIME_CHAR_BANK: dict[str, list[list[list[float]]]] | None = None
 _RUNTIME_CHAR_BANK_LOCK = Lock()
@@ -65,6 +70,14 @@ _HIRAGANA_STROKE_RANGE: dict[str, tuple[int, int]] = {
     "う": (2, 3),
     "え": (2, 4),
     "お": (3, 5),
+    "く": (1, 2),
+    "ほ": (3, 5),
+    "れ": (1, 3),
+    "を": (2, 4),
+    "す": (1, 3),
+    "へ": (1, 2),
+    "も": (2, 4),
+    "ろ": (1, 2),
     # Stabilize na-row by excluding over-fragmented trajectories.
     "な": (3, 5),
     "に": (2, 4),
@@ -73,6 +86,53 @@ _HIRAGANA_STROKE_RANGE: dict[str, tuple[int, int]] = {
     "の": (1, 2),
 }
 _HIRAGANA_NA_ROW = {"な", "に", "ぬ", "ね", "の"}
+_SMALL_KANA_CHARS = set(
+    "ぁぃぅぇぉっゃゅょゎゕゖ"
+    "ァィゥェォッャュョヮヵヶ"
+    "ㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"
+)
+_SMALL_YOON_CHARS = set("ゃゅょャュョ")
+_SMALL_SOKUON_CHARS = set("っッ")
+_PUNCTUATION_CHARS = set(
+    "。、，．！？!?・…ー〜—-－"
+    "「」『』（）()【】[]［］{}｛｝〈〉《》〔〕"
+    "：；:;,.／/＼\\｜|＋+=＝＊*＆&％%＃#＠@￥¥$"
+    "“”‘’\"'"
+)
+_KANA_SIZE_BIAS: dict[str, float] = {
+    # Tall/narrow kana tend to look oversized after box normalization.
+    "い": 0.60,
+    "り": 0.76,
+    "し": 0.78,
+    "く": 0.85,
+    "け": 0.86,
+    "に": 0.88,
+    "ハ": 0.82,
+    "リ": 0.82,
+    "ノ": 0.80,
+    "イ": 0.82,
+    "ト": 0.84,
+    "レ": 0.84,
+    # Rounded kana often look optically smaller, so give them a tiny lift.
+    "の": 1.03,
+    "め": 1.02,
+    "ぬ": 1.02,
+    "る": 1.02,
+    "ロ": 1.02,
+}
+_OPTICALLY_NARROW_KANA = set("いりしくけにハリノイトレ")
+_OPTICALLY_ROUND_KANA = set("のめぬるろあおロ")
+_KATAKANA_STROKE_RANGE: dict[str, tuple[int, int]] = {
+    "ア": (2, 2), "イ": (2, 2), "ウ": (3, 3), "エ": (3, 3), "オ": (3, 3),
+    "カ": (2, 2), "キ": (3, 3), "ク": (2, 2), "ケ": (3, 3), "コ": (2, 2),
+    "サ": (3, 3), "シ": (3, 3), "ス": (2, 2), "セ": (2, 2), "ソ": (2, 2),
+    "タ": (3, 3), "チ": (3, 3), "ツ": (3, 3), "テ": (3, 3), "ト": (2, 2),
+    "ナ": (2, 2), "ニ": (2, 2), "ヌ": (2, 2), "ネ": (4, 4), "ノ": (1, 1),
+    "ハ": (2, 2), "ヒ": (2, 2), "フ": (1, 1), "ヘ": (1, 1), "ホ": (4, 4),
+    "マ": (2, 2), "ミ": (3, 3), "ム": (2, 2), "メ": (2, 2), "モ": (3, 3),
+    "ヤ": (2, 2), "ユ": (2, 2), "ヨ": (3, 3), "ラ": (2, 2), "リ": (2, 2),
+    "ル": (2, 2), "レ": (1, 1), "ロ": (3, 3), "ワ": (2, 2), "ヲ": (3, 3), "ン": (2, 2),
+}
 
 app = FastAPI(title="Accessibility Handwriting MVP")
 app.add_middleware(
@@ -133,6 +193,10 @@ def _is_kana_char(ch: str) -> bool:
     return _is_hiragana_char(ch) or _is_katakana_char(ch)
 
 
+def _is_small_kana_char(ch: str) -> bool:
+    return len(ch) == 1 and ch in _SMALL_KANA_CHARS
+
+
 def _is_kanji_char(ch: str) -> bool:
     if len(ch) != 1:
         return False
@@ -148,7 +212,15 @@ def _is_japanese_char(ch: str) -> bool:
     if _is_kana_char(ch) or _is_kanji_char(ch):
         return True
     # Common JP punctuation marks often appear in phrases.
-    return ch in {"ー", "々", "〆", "ヶ", "、", "。", "・", "「", "」", "『", "』", "（", "）", "！", "？", "〜", "…"}
+    return ch in _PUNCTUATION_CHARS or ch in {"々", "〆", "ヶ"}
+
+
+def _is_punctuation_char(ch: str) -> bool:
+    return len(ch) == 1 and ch in _PUNCTUATION_CHARS
+
+
+def _is_latin_char(ch: str) -> bool:
+    return len(ch) == 1 and ch in LATIN_TARGET
 
 
 def _is_kana_text(text: str) -> bool:
@@ -197,6 +269,20 @@ def _is_japanese_text(text: str) -> bool:
             continue
         return False
     return has_japanese
+
+
+def _is_latin_text(text: str) -> bool:
+    has_latin = False
+    for ch in text:
+        if ch.isspace():
+            continue
+        if _is_latin_char(ch):
+            has_latin = True
+            continue
+        if _is_punctuation_char(ch):
+            continue
+        return False
+    return has_latin
 
 
 def _has_kana_coverage(text: str, exemplars_text: dict[str, object] | None) -> bool:
@@ -502,6 +588,14 @@ def _apply_runtime_variation(
     cx = sum(p[0] for p in all_pts) / float(len(all_pts))
     cy = sum(p[1] for p in all_pts) / float(len(all_pts))
     rng = np.random.default_rng(_stable_int_seed(seed) & 0xFFFFFFFF)
+    stroke_count = len(strokes)
+    point_count = len(all_pts)
+    kanji_complexity = 0.0
+    if _is_kanji_char(ch):
+        kanji_complexity = max(
+            0.0,
+            min(1.0, max((stroke_count - 7) / 10.0, (point_count - 120) / 180.0)),
+        )
 
     # Keep shape stable; only add subtle handwritten variation.
     rot_deg = float(rng.uniform(-2.1, 2.1))
@@ -511,12 +605,12 @@ def _apply_runtime_variation(
     shift_x = float(rng.uniform(-0.45, 0.45))
     shift_y = float(rng.uniform(-0.45, 0.45))
     if _is_kana_char(ch):
-        rot_deg = float(rng.uniform(-0.80, 0.80))
-        scale_x = float(1.0 + rng.uniform(-0.010, 0.010))
-        scale_y = float(1.0 + rng.uniform(-0.010, 0.010))
-        shear = float(rng.uniform(-0.006, 0.006))
-        shift_x = float(rng.uniform(-0.16, 0.16))
-        shift_y = float(rng.uniform(-0.16, 0.16))
+        rot_deg = float(rng.uniform(-1.85, 1.85))
+        scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
+        scale_y = float(1.0 + rng.uniform(-0.026, 0.026))
+        shear = float(rng.uniform(-0.017, 0.017))
+        shift_x = float(rng.uniform(-0.42, 0.42))
+        shift_y = float(rng.uniform(-0.38, 0.38))
     if ch in _HIRAGANA_NA_ROW:
         rot_deg = float(rng.uniform(-1.05, 1.05))
         scale_x = float(1.0 + rng.uniform(-0.014, 0.014))
@@ -525,12 +619,13 @@ def _apply_runtime_variation(
         shift_x = float(rng.uniform(-0.24, 0.24))
         shift_y = float(rng.uniform(-0.24, 0.24))
     if _is_kanji_char(ch):
-        rot_deg *= 0.7
-        scale_x = 1.0 + (scale_x - 1.0) * 0.6
-        scale_y = 1.0 + (scale_y - 1.0) * 0.6
-        shear *= 0.6
-        shift_x *= 0.8
-        shift_y *= 0.8
+        natural = 0.45 + kanji_complexity * 0.36
+        rot_deg *= natural
+        scale_x = 1.0 + (scale_x - 1.0) * (0.38 + kanji_complexity * 0.26)
+        scale_y = 1.0 + (scale_y - 1.0) * (0.38 + kanji_complexity * 0.26)
+        shear *= 0.28 + kanji_complexity * 0.28
+        shift_x *= 0.45 + kanji_complexity * 0.30
+        shift_y *= 0.45 + kanji_complexity * 0.30
 
     rot = math.radians(rot_deg)
     cr = math.cos(rot)
@@ -543,13 +638,20 @@ def _apply_runtime_variation(
             continue
         amp = float(rng.uniform(0.06, 0.17))
         if _is_kanji_char(ch):
-            amp *= 0.7
+            amp *= 0.42 + kanji_complexity * 0.52
         if _is_kana_char(ch):
-            amp = 0.0
+            amp = float(rng.uniform(0.038, 0.112))
         if ch in _HIRAGANA_NA_ROW:
-            amp *= 0.42
+            amp *= 0.80
         s_tx = float(rng.uniform(-0.18, 0.18))
         s_ty = float(rng.uniform(-0.18, 0.18))
+        if _is_kanji_char(ch):
+            stroke_shift = 0.09 + kanji_complexity * 0.16
+            s_tx = float(rng.uniform(-stroke_shift, stroke_shift))
+            s_ty = float(rng.uniform(-stroke_shift, stroke_shift))
+        if _is_kana_char(ch):
+            s_tx = float(rng.uniform(-0.22, 0.22))
+            s_ty = float(rng.uniform(-0.20, 0.20))
         if ch in _HIRAGANA_NA_ROW:
             s_tx = float(rng.uniform(-0.09, 0.09))
             s_ty = float(rng.uniform(-0.09, 0.09))
@@ -559,6 +661,8 @@ def _apply_runtime_variation(
         if ch in _HIRAGANA_NA_ROW:
             bend_center = float(rng.uniform(0.40, 0.60))
             bend_width = float(rng.uniform(0.62, 0.88))
+        if _is_kanji_char(ch) and kanji_complexity > 0.0:
+            bend_width = float(rng.uniform(0.36, 0.72))
         bend_sign = -1.0 if (stroke_idx % 2 == 0 and rng.uniform() < 0.5) else 1.0
 
         out_stroke: list[tuple[float, float, int]] = []
@@ -596,13 +700,96 @@ def _apply_runtime_variation(
 
             # Slight endpoint anchor keeps shapes readable.
             t2 = float(i) / float(max(1, n - 1))
-            endpoint_pull = max(0.0, 0.24 - abs(t2 - 0.5)) * (0.58 if ch in _HIRAGANA_NA_ROW else 0.42)
+            endpoint_pull = max(0.0, 0.24 - abs(t2 - 0.5)) * (
+                0.56 if ch in _HIRAGANA_NA_ROW else 0.30 if _is_kana_char(ch) else 0.42 - kanji_complexity * 0.12
+            )
             px = px * (1.0 - endpoint_pull) + x * endpoint_pull
             py = py * (1.0 - endpoint_pull) + y * endpoint_pull
 
             out_stroke.append((px, py, w))
         varied.append(out_stroke)
     return varied
+
+
+def _circle_stroke(
+    cx: float,
+    cy: float,
+    r: float,
+    *,
+    points: int = 18,
+    width: int = 2,
+    wobble: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> list[tuple[float, float, int]]:
+    out: list[tuple[float, float, int]] = []
+    for i in range(points + 1):
+        t = math.tau * float(i) / float(points)
+        rr = r
+        if rng is not None and wobble > 0:
+            rr += float(rng.uniform(-wobble, wobble))
+        out.append((cx + math.cos(t) * rr, cy + math.sin(t) * rr, width))
+    return out
+
+
+def _runtime_punctuation_strokes(ch: str, seed: str) -> list[list[tuple[float, float, int]]]:
+    rng = np.random.default_rng(_stable_int_seed(seed) & 0xFFFFFFFF)
+
+    def j(v: float, amount: float = 1.2) -> float:
+        return v + float(rng.uniform(-amount, amount))
+
+    if ch in {"。", "．"}:
+        return [_circle_stroke(j(50, 0.5), j(50, 0.5), j(7, 0.5), points=14, width=1, wobble=0.4, rng=rng)]
+    if ch in {".", "・"}:
+        return [_circle_stroke(j(50, 0.4), j(50, 0.4), j(4, 0.3), points=10, width=1, wobble=0.2, rng=rng)]
+    if ch in {"、", "，", ","}:
+        return [[(j(44), j(45), 2), (j(48), j(58), 2), (j(55), j(70), 1)]]
+    if ch in {"！", "!"}:
+        return [
+            [(j(50), j(8), 2), (j(48), j(58), 2)],
+            _circle_stroke(j(48, 0.6), j(82, 0.6), j(7, 0.6), points=12, width=2, wobble=0.5, rng=rng),
+        ]
+    if ch in {"？", "?"}:
+        return [
+            [
+                (j(31), j(23), 2),
+                (j(43), j(8), 2),
+                (j(64), j(14), 2),
+                (j(66), j(34), 2),
+                (j(51), j(48), 2),
+                (j(49), j(62), 2),
+            ],
+            _circle_stroke(j(49, 0.6), j(84, 0.6), j(7, 0.6), points=12, width=2, wobble=0.5, rng=rng),
+        ]
+    if ch == "…":
+        return [
+            _circle_stroke(j(22, 0.4), j(50, 0.4), j(6, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+            _circle_stroke(j(50, 0.4), j(50, 0.4), j(6, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+            _circle_stroke(j(78, 0.4), j(50, 0.4), j(6, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+        ]
+    if ch in {"ー", "〜"}:
+        pts = [(j(8), j(50), 2), (j(32), j(44 if ch == "〜" else 50), 2), (j(62), j(56 if ch == "〜" else 50), 2), (j(92), j(50), 2)]
+        return [pts]
+    if ch in {"：", ":"}:
+        return [
+            _circle_stroke(j(50, 0.5), j(30, 0.5), j(7, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+            _circle_stroke(j(50, 0.5), j(70, 0.5), j(7, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+        ]
+    if ch in {"；", ";"}:
+        return [
+            _circle_stroke(j(50, 0.5), j(30, 0.5), j(7, 0.5), points=10, width=2, wobble=0.4, rng=rng),
+            [(j(56), j(62), 2), (j(48), j(78), 1), (j(40), j(88), 1)],
+        ]
+    if ch in {"「", "『"}:
+        inset = 26 if ch == "『" else 18
+        return [[(j(78), j(10), 2), (j(inset), j(10), 2), (j(inset), j(88), 2)]]
+    if ch in {"」", "』"}:
+        inset = 74 if ch == "』" else 82
+        return [[(j(22), j(90), 2), (j(inset), j(90), 2), (j(inset), j(12), 2)]]
+    if ch in {"（", "("}:
+        return [[(j(68), j(8), 2), (j(45), j(28), 2), (j(38), j(52), 2), (j(45), j(76), 2), (j(68), j(94), 2)]]
+    if ch in {"）", ")"}:
+        return [[(j(32), j(8), 2), (j(55), j(28), 2), (j(62), j(52), 2), (j(55), j(76), 2), (j(32), j(94), 2)]]
+    return []
 
 
 def _extract_strokes_from_local(local: list[tuple[float, float, str, int]]) -> list[list[tuple[float, float, int]]]:
@@ -662,7 +849,13 @@ def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") ->
         return float("-inf")
     big_any, big_down = _sequence_step_jump_penalty(seq)
     # Exclude broken trajectories with huge jumps.
-    if big_any > 6 or big_down > 2:
+    kanji_focused_source = source.startswith("kanjivg") or source.startswith("kkanji")
+    if _is_kanji_char(ch) and kanji_focused_source:
+        # KanjiVG has legitimate pen-up moves between components; reject only
+        # large jumps while the pen is down or extreme fragmentation.
+        if big_any > 18 or big_down > 2:
+            return float("-inf")
+    elif big_any > 6 or big_down > 2:
         return float("-inf")
     strokes = _sequence_to_strokes(seq)
     if not strokes:
@@ -683,8 +876,21 @@ def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") ->
             return float("-inf")
         if point_count > 170:
             return float("-inf")
+    if _is_kanji_char(ch):
+        # Keep kanji candidates constrained to avoid noisy scribble-like paths.
+        min_kanji_strokes = 1 if kanji_focused_source else 3
+        if stroke_count < min_kanji_strokes:
+            return float("-inf")
+        if point_count > 420:
+            return float("-inf")
     if _is_hiragana_char(ch):
         stroke_range = _HIRAGANA_STROKE_RANGE.get(ch)
+        if stroke_range is not None:
+            lo, hi = stroke_range
+            if stroke_count < lo or stroke_count > hi:
+                return float("-inf")
+    if _is_katakana_char(ch):
+        stroke_range = _KATAKANA_STROKE_RANGE.get(ch)
         if stroke_range is not None:
             lo, hi = stroke_range
             if stroke_count < lo or stroke_count > hi:
@@ -707,11 +913,30 @@ def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") ->
         source_bonus = 14.0
     elif source.startswith("kanjivg"):
         source_bonus = 12.0
+    elif source.startswith("kkanji"):
+        source_bonus = 10.0
+    elif source.startswith("punctuation-generated"):
+        source_bonus = 24.0
+    elif source.startswith("latin-generated"):
+        source_bonus = 18.0
     # For these characters, k49 often yields over-simplified or broken forms.
     if ch in {"い", "う", "え", "お"} and source == "k49":
         source_bonus -= 18.0
-    preferred_strokes = 2.8 if _is_kana_char(ch) else 6.0
+    preferred_strokes = 1.6 if _is_punctuation_char(ch) else 2.8 if _is_kana_char(ch) else 2.2 if _is_latin_char(ch) else 6.0
     stroke_penalty = abs(stroke_count - preferred_strokes) * (5.5 if _is_kana_char(ch) else 2.5)
+    if _is_kanji_char(ch):
+        # Kanji should come from kanji-focused sources; de-prioritize mixed/noisy rows.
+        if not (source.startswith("kanjivg") or source.startswith("kkanji")):
+            source_bonus -= 16.0
+        # Hard guards against fragmented/zig-zag trajectories.
+        if turn_penalty > 0.48:
+            return float("-inf")
+        if short_frag > max(10, stroke_count):
+            return float("-inf")
+        if tiny_frag > max(6, stroke_count // 2):
+            return float("-inf")
+        if length_ratio > 5.8:
+            return float("-inf")
     return (
         min(180.0, total_len * 0.55)
         + min(120.0, span_x + span_y)
@@ -786,7 +1011,12 @@ def _select_runtime_char_sequence(ch: str, *, seed: str) -> list[list[float]] | 
     if not candidates:
         return None
     if ch in {"い", "う", "え", "お"}:
+        top_n = min(6, len(candidates))
+    elif _is_kanji_char(ch):
+        # Prefer top-ranked stable kanji forms.
         top_n = min(3, len(candidates))
+    elif _is_kana_char(ch):
+        top_n = min(10, len(candidates))
     else:
         top_n = min(6, len(candidates))
     idx = _stable_int_seed(seed) % top_n
@@ -816,17 +1046,84 @@ def _score_runtime_char_strokes(strokes: list[list[tuple[float, float, int]]], c
             lo, hi = stroke_range
             if stroke_count < lo or stroke_count > hi:
                 return float("-inf")
+    if _is_katakana_char(ch):
+        stroke_range = _KATAKANA_STROKE_RANGE.get(ch)
+        if stroke_range is not None:
+            lo, hi = stroke_range
+            if stroke_count < lo or stroke_count > hi:
+                return float("-inf")
     length_ratio = total_len / max(1.0, span_x + span_y)
-    expected_strokes = 2.8 if _is_kana_char(ch) else 6.0
+    expected_strokes = 1.6 if _is_punctuation_char(ch) else 2.8 if _is_kana_char(ch) else 2.2 if _is_latin_char(ch) else 6.0
     return (
         min(120.0, total_len * 0.42)
         + min(90.0, span_x + span_y)
-        - abs(stroke_count - expected_strokes) * (6.0 if _is_kana_char(ch) else 3.0)
+        - abs(stroke_count - expected_strokes) * (4.0 if _is_punctuation_char(ch) else 6.0 if _is_kana_char(ch) else 3.0)
         - redraw_count * 8.0
         - turn_penalty * 72.0
         - max(0.0, length_ratio - 4.0) * 50.0
         - max(0, point_count - 96) * 1.8
     )
+
+
+def _kana_line_balance(line: str) -> dict[str, float]:
+    kana = [ch for ch in line if _is_kana_char(ch) and not _is_small_kana_char(ch)]
+    if not kana:
+        return {"kana_count": 0.0, "narrow_ratio": 0.0, "round_ratio": 0.0}
+    narrow = sum(1 for ch in kana if ch in _OPTICALLY_NARROW_KANA)
+    rounded = sum(1 for ch in kana if ch in _OPTICALLY_ROUND_KANA)
+    count = float(len(kana))
+    return {
+        "kana_count": count,
+        "narrow_ratio": narrow / count,
+        "round_ratio": rounded / count,
+    }
+
+
+def _kana_string_beauty_score(
+    strokes: list[list[tuple[float, float, int]]],
+    ch: str,
+    line_balance: dict[str, float],
+) -> float:
+    if not _is_kana_char(ch) or not strokes:
+        return 0.0
+    pts = [(x, y) for stroke in strokes for (x, y, _w) in stroke]
+    if len(pts) < 8:
+        return -24.0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    span_x = max(1e-6, max(xs) - min(xs))
+    span_y = max(1e-6, max(ys) - min(ys))
+    aspect = span_y / span_x
+    total_len = sum(_stroke_path_len(s) for s in strokes)
+    density = total_len / max(1.0, span_x + span_y)
+
+    if ch in _OPTICALLY_NARROW_KANA:
+        target_aspect = 1.28 if line_balance.get("narrow_ratio", 0.0) < 0.42 else 1.46
+        penalty = max(0.0, aspect - target_aspect) * 28.0
+        penalty += max(0.0, density - 1.42) * 10.0
+        return max(-54.0, 7.0 - penalty)
+    if ch in _OPTICALLY_ROUND_KANA:
+        # Round glyphs can be a touch fuller without looking loud in a line.
+        return min(8.0, max(-12.0, 5.0 - abs(aspect - 1.03) * 5.0))
+    return max(-18.0, 3.0 - abs(aspect - 0.95) * 5.5)
+
+
+def _kana_optical_size_factor(
+    *,
+    ch: str,
+    aspect: float,
+    density: float,
+    line_balance: dict[str, float],
+) -> float:
+    factor = 1.0
+    if ch in _OPTICALLY_NARROW_KANA:
+        pressure = 0.035 + max(0.0, aspect - 1.24) * 0.12 + max(0.0, density - 1.30) * 0.055
+        if line_balance.get("narrow_ratio", 0.0) < 0.42:
+            pressure += 0.085
+        factor *= max(0.62, 1.0 - pressure)
+    elif ch in _OPTICALLY_ROUND_KANA:
+        factor *= 1.015
+    return max(0.60, min(1.08, factor))
 
 
 def _generate_hiragana_runtime_trajectory(text: str) -> list[dict]:
@@ -1183,31 +1480,138 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
 
     stroke_paths: list[tuple[str, float]] = []
     for row, line in enumerate(lines):
+        line_balance = _kana_line_balance(line)
         x = pad_x
         y = pad_y + row * (char_h + line_gap)
         for col, ch in enumerate(line):
             if ch.isspace():
                 x += int(char_w * 0.55)
                 continue
-            attempt_rows: list[tuple[float, list[list[tuple[float, float, int]]]]] = []
-            for attempt in range(8):
-                # Keep base character shape deterministic for stability.
-                seed = f"runtime-ds-base:v1:{text}:{row}:{col}:{ch}:{attempt}"
-                seq = _select_runtime_char_sequence(ch, seed=seed)
-                if seq is not None:
-                    strokes = _merge_fragmented_strokes(_sequence_to_strokes(seq))
+            is_small_kana = _is_small_kana_char(ch)
+            cell_w = char_w
+            cell_h = char_h
+            cell_offset_x = 0.0
+            cell_offset_y = 0.0
+            advance_w = char_w
+            if is_small_kana:
+                # Small kana: keep glyph smaller and place slightly lower-right.
+                if ch in _SMALL_YOON_CHARS:
+                    cell_scale = 0.76
+                    advance_scale = 0.84
                 else:
-                    # Fallback only when dataset trajectory for char is unavailable.
-                    img = _render_runtime_char_image(ch, seed=seed, size=160)
-                    if img is None:
-                        continue
-                    strokes = _merge_fragmented_strokes(_strokes_from_runtime_image(img))
-                score = _score_runtime_char_strokes(strokes, ch)
-                if score == float("-inf"):
-                    continue
-                attempt_rows.append((score, strokes))
+                    cell_scale = 0.64
+                    advance_scale = 0.72
+                cell_w = char_w * cell_scale
+                cell_h = char_h * cell_scale
+                cell_offset_x = char_w * 0.18
+                cell_offset_y = char_h * 0.22
+                advance_w = char_w * advance_scale
 
-            if not attempt_rows:
+                # Pull small kana closer to the previous full-sized kana.
+                prev_ch = ""
+                j = col - 1
+                while j >= 0:
+                    if not line[j].isspace():
+                        prev_ch = line[j]
+                        break
+                    j -= 1
+                if (
+                    prev_ch
+                    and _is_kana_char(prev_ch)
+                    and (not _is_small_kana_char(prev_ch))
+                ):
+                    # Katakana small glyphs are often written slightly lower than hiragana.
+                    extra_drop = char_h * (0.03 if _is_katakana_char(ch) else 0.0)
+                    if ch in _SMALL_YOON_CHARS:
+                        cell_offset_x -= char_w * 0.28
+                        cell_offset_y += char_h * 0.16 + extra_drop
+                        advance_w = min(advance_w, char_w * 0.78)
+                    elif ch in _SMALL_SOKUON_CHARS:
+                        cell_offset_x -= char_w * 0.18
+                        cell_offset_y += char_h * 0.15 + extra_drop
+                        advance_w = min(advance_w, char_w * 0.66)
+                    else:
+                        cell_offset_x -= char_w * 0.14
+                        cell_offset_y += char_h * 0.13 + extra_drop
+                        advance_w = min(advance_w, char_w * 0.64)
+            if _is_latin_char(ch):
+                if ch.isupper():
+                    cell_w = char_w * 0.72
+                    cell_h = char_h * 0.86
+                    cell_offset_x = char_w * 0.08
+                    cell_offset_y = char_h * 0.06
+                    advance_w = char_w * 0.70
+                elif ch.isdigit():
+                    cell_w = char_w * 0.66
+                    cell_h = char_h * 0.84
+                    cell_offset_x = char_w * 0.10
+                    cell_offset_y = char_h * 0.07
+                    advance_w = char_w * 0.64
+                else:
+                    cell_w = char_w * 0.60
+                    cell_h = char_h * 0.74
+                    cell_offset_x = char_w * 0.10
+                    cell_offset_y = char_h * 0.18
+                    advance_w = char_w * (0.35 if ch in {"i", "j", "l"} else 0.56)
+            is_punctuation = _is_punctuation_char(ch)
+            direct_strokes: list[list[tuple[float, float, int]]] | None = None
+            punctuation_fallback_strokes: list[list[tuple[float, float, int]]] | None = None
+            if is_punctuation:
+                punct_seed = f"runtime-punct:v1:{render_nonce}:{text}:{row}:{col}:{ch}"
+                punctuation_fallback_strokes = _runtime_punctuation_strokes(ch, punct_seed)
+                if ch in {"。", "．", ".", "、", "，", ",", "・"}:
+                    cell_w = char_w * 0.42
+                    cell_h = char_h * 0.42
+                    cell_offset_x = char_w * (0.34 if ch in {"、", "，", ","} else 0.48)
+                    cell_offset_y = char_h * 0.50
+                    advance_w = char_w * 0.42
+                elif ch in {"：", "；", ":", ";", "…"}:
+                    cell_w = char_w * 0.58
+                    cell_h = char_h * 0.45
+                    cell_offset_x = char_w * 0.24
+                    cell_offset_y = char_h * 0.34
+                    advance_w = char_w * 0.55
+                elif ch in {"ー", "〜", "—", "-", "－", "／", "/", "＼", "\\", "｜", "|", "＋", "+", "=", "＝"}:
+                    cell_w = char_w * 0.78
+                    cell_h = char_h * (0.70 if ch in {"／", "/", "＼", "\\", "｜", "|", "＋", "+", "=", "＝"} else 0.32)
+                    cell_offset_x = char_w * 0.08
+                    cell_offset_y = char_h * (0.14 if ch in {"／", "/", "＼", "\\", "｜", "|", "＋", "+", "=", "＝"} else 0.34)
+                    advance_w = char_w * 0.78
+                elif ch in {"！", "!", "？", "?"}:
+                    cell_w = char_w * 0.58
+                    cell_h = char_h * 0.90
+                    cell_offset_x = char_w * 0.22
+                    cell_offset_y = char_h * 0.04
+                    advance_w = char_w * 0.58
+                else:
+                    cell_w = char_w * 0.62
+                    cell_h = char_h * 0.90
+                    cell_offset_x = char_w * 0.18
+                    cell_offset_y = char_h * 0.04
+                    advance_w = char_w * 0.62
+            attempt_rows: list[tuple[float, list[list[tuple[float, float, int]]]]] = []
+            if direct_strokes:
+                attempt_rows.append((100.0, direct_strokes))
+            else:
+                for attempt in range(8):
+                    # Per-request base candidate shuffle (quality-gated later).
+                    seed = f"runtime-ds-base:v2:{render_nonce}:{text}:{row}:{col}:{ch}:{attempt}"
+                    seq = _select_runtime_char_sequence(ch, seed=seed)
+                    if seq is not None:
+                        strokes = _merge_fragmented_strokes(_sequence_to_strokes(seq))
+                    else:
+                        # Fallback only when dataset trajectory for char is unavailable.
+                        img = _render_runtime_char_image(ch, seed=seed, size=160)
+                        if img is None:
+                            continue
+                        strokes = _merge_fragmented_strokes(_strokes_from_runtime_image(img))
+                    score = _score_runtime_char_strokes(strokes, ch)
+                    if score == float("-inf"):
+                        continue
+                    score += _kana_string_beauty_score(strokes, ch, line_balance)
+                    attempt_rows.append((score, strokes))
+
+            if not attempt_rows and not is_punctuation:
                 # Character-level rescue: do not silently drop unsupported/bad chars.
                 rescue_seed = f"runtime-ds-rescue:v1:{text}:{row}:{col}:{ch}"
                 rescue_img = _render_runtime_char_image(ch, seed=rescue_seed, size=172)
@@ -1217,36 +1621,65 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                         rescue_score = _score_runtime_char_strokes(rescue_strokes, ch)
                         if rescue_score == float("-inf"):
                             rescue_score = 0.0
+                        rescue_score += _kana_string_beauty_score(rescue_strokes, ch, line_balance)
                         attempt_rows.append((rescue_score, rescue_strokes))
-                if not attempt_rows:
-                    x += char_w
-                    continue
+            if not attempt_rows and punctuation_fallback_strokes:
+                attempt_rows.append((100.0, punctuation_fallback_strokes))
+            if not attempt_rows:
+                x += advance_w
+                continue
 
             attempt_rows.sort(key=lambda it: it[0], reverse=True)
             best_score = attempt_rows[0][0]
-            # Always keep best base shape; randomness is applied only as a light variation.
-            best_strokes = attempt_rows[0][1]
+            # Keep quality stable but allow mild base-shape randomness for kana.
+            if _is_kana_char(ch):
+                base_band = [it for it in attempt_rows if it[0] >= (best_score - 13.0)]
+                if not base_band:
+                    base_band = [attempt_rows[0]]
+                base_pick = _stable_int_seed(
+                    f"runtime-base-pick:v2:{render_nonce}:{text}:{row}:{col}:{ch}"
+                ) % len(base_band)
+                base_score, best_strokes = base_band[base_pick]
+            else:
+                base_score, best_strokes = attempt_rows[0]
 
             # Generate several random variants, then keep only high-quality ones.
             variant_pool: list[list[list[tuple[float, float, int]]]] = [best_strokes]
-            for v_idx in range(6):
+            kanji_complexity = 0.0
+            if _is_kanji_char(ch):
+                pts_for_complexity = [(px, py) for stroke in best_strokes for (px, py, _w) in stroke]
+                kanji_complexity = max(
+                    0.0,
+                    min(1.0, max((len(best_strokes) - 7) / 10.0, (len(pts_for_complexity) - 120) / 180.0)),
+                )
+            variant_trials = (5 + int(kanji_complexity * 3)) if _is_kanji_char(ch) else 11
+            for v_idx in range(variant_trials):
                 varied = _apply_runtime_variation(
                     best_strokes,
                     seed=f"runtime-var:v2:{render_nonce}:{text}:{row}:{col}:{ch}:{v_idx}",
                     ch=ch,
                 )
                 v_score = _score_runtime_char_strokes(varied, ch) if varied else float("-inf")
-                if v_score < (best_score - (8.0 if _is_kana_char(ch) else 20.0)):
+                if v_score != float("-inf"):
+                    v_score += _kana_string_beauty_score(varied, ch, line_balance)
+                if _is_kanji_char(ch):
+                    min_score_delta = 10.0 + kanji_complexity * 6.0
+                else:
+                    min_score_delta = 16.0 if _is_kana_char(ch) else 20.0
+                if v_score < (base_score - min_score_delta):
                     continue
                 shape_iou = _strokes_shape_iou(best_strokes, varied)
-                min_iou = 0.93 if _is_kana_char(ch) else 0.72
+                if _is_kanji_char(ch):
+                    min_iou = 0.84 - kanji_complexity * 0.06
+                else:
+                    min_iou = 0.82 if _is_kana_char(ch) else 0.72
                 if shape_iou < min_iou:
                     continue
                 variant_pool.append(varied)
             pick_seed = _stable_int_seed(f"runtime-variant-pick:v1:{render_nonce}:{text}:{row}:{col}:{ch}")
             draw_strokes = variant_pool[pick_seed % len(variant_pool)]
             if not draw_strokes:
-                x += char_w
+                x += advance_w
                 continue
 
             all_pts = [(sx, sy) for stroke in draw_strokes for (sx, sy, _w) in stroke]
@@ -1258,15 +1691,57 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
             max_y = max(ys)
             span_x = max(1e-6, max_x - min_x)
             span_y = max(1e-6, max_y - min_y)
-            scale = min((char_w - 4) / span_x, (char_h - 4) / span_y)
-            scale = max(0.02, min(3.2, scale))
-            off_x = x + (char_w - span_x * scale) * 0.5
-            off_y = y + (char_h - span_y * scale) * 0.5
+            fit_x = max(0.02, min(3.2, (cell_w - 4) / span_x))
+            fit_y = max(0.02, min(3.2, (cell_h - 4) / span_y))
+            iso = min(fit_x, fit_y)
+            size_comp = 1.0
+            blend = 0.18
+
+            # Normalize apparent glyph size across characters while keeping slight randomness.
+            if _is_kana_char(ch):
+                size_seed = _stable_int_seed(
+                    f"runtime-size:v1:{render_nonce}:{text}:{row}:{col}:{ch}"
+                )
+                rnd = ((size_seed % 1000) / 1000.0) - 0.5
+                fill = 0.91 + rnd * 0.12  # approx 0.85..0.97
+
+                aspect = span_y / max(1e-6, span_x)
+                aspect_dev = abs(math.log(max(1e-6, aspect / 0.95)))
+                aspect_comp = max(0.88, 1.0 - 0.12 * aspect_dev)
+
+                total_len = sum(_stroke_path_len(s) for s in draw_strokes)
+                len_ratio = total_len / max(1.0, span_x + span_y)
+                density_comp = 1.0
+                if len_ratio > 1.95:
+                    density_comp -= min(0.12, (len_ratio - 1.95) * 0.14)
+                elif len_ratio < 0.95:
+                    density_comp += min(0.05, (0.95 - len_ratio) * 0.12)
+
+                char_bias = _KANA_SIZE_BIAS.get(ch, 1.0)
+                optical_comp = _kana_optical_size_factor(
+                    ch=ch,
+                    aspect=aspect,
+                    density=len_ratio,
+                    line_balance=line_balance,
+                )
+                size_comp = fill * aspect_comp * density_comp * char_bias * optical_comp
+                # Mild anisotropic normalization reduces per-character size gaps.
+                blend = 0.36
+
+            scale_x = (iso * (1.0 - blend) + fit_x * blend) * size_comp
+            scale_y = (iso * (1.0 - blend) + fit_y * blend) * size_comp
+            draw_w = span_x * scale_x
+            draw_h = span_y * scale_y
+            off_x = x + cell_offset_x + (cell_w - draw_w) * 0.5
+            off_y = y + cell_offset_y + (cell_h - draw_h) * 0.5
 
             for stroke_idx, stroke in enumerate(draw_strokes):
                 raw_xy = [(px, py) for (px, py, _w) in stroke]
                 if _is_kana_char(ch):
                     sampled_xy = _resample_polyline(raw_xy, spacing=1.32)
+                elif _is_latin_char(ch):
+                    smoothed_xy = _chaikin_smooth(raw_xy, iterations=3)
+                    sampled_xy = _resample_polyline(smoothed_xy, spacing=1.30)
                 else:
                     # Avoid overly uniform digital roundness: keep some natural angularity.
                     smooth_iter = 2 if len(raw_xy) >= 16 else 1
@@ -1274,34 +1749,55 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     sampled_xy = _resample_polyline(smoothed_xy, spacing=1.18)
                 if len(sampled_xy) < 2:
                     continue
+                mapped_xy = [
+                    (
+                        off_x + (pt[0] - min_x) * scale_x,
+                        off_y + (pt[1] - min_y) * scale_y,
+                    )
+                    for pt in sampled_xy
+                ]
                 seg_parts: list[str] = []
-                first_x = off_x + (sampled_xy[0][0] - min_x) * scale
-                first_y = off_y + (sampled_xy[0][1] - min_y) * scale
+                first_x, first_y = mapped_xy[0]
                 seg_parts.append(f"M{first_x:.2f},{first_y:.2f}")
                 if _is_kana_char(ch):
-                    for idx2 in range(1, len(sampled_xy)):
-                        lx = off_x + (sampled_xy[idx2][0] - min_x) * scale
-                        ly = off_y + (sampled_xy[idx2][1] - min_y) * scale
+                    for idx2 in range(1, len(mapped_xy)):
+                        lx, ly = mapped_xy[idx2]
                         seg_parts.append(f"L{lx:.2f},{ly:.2f}")
                 else:
-                    for idx2 in range(1, len(sampled_xy) - 1):
-                        cx, cy = sampled_xy[idx2]
-                        nx, ny = sampled_xy[idx2 + 1]
-                        ccx = off_x + (cx - min_x) * scale
-                        ccy = off_y + (cy - min_y) * scale
-                        mx = off_x + ((cx + nx) * 0.5 - min_x) * scale
-                        my = off_y + ((cy + ny) * 0.5 - min_y) * scale
+                    for idx2 in range(1, len(mapped_xy) - 1):
+                        ccx, ccy = mapped_xy[idx2]
+                        nx, ny = mapped_xy[idx2 + 1]
+                        mx = (ccx + nx) * 0.5
+                        my = (ccy + ny) * 0.5
                         seg_parts.append(f"Q{ccx:.2f},{ccy:.2f} {mx:.2f},{my:.2f}")
-                    last_x = off_x + (sampled_xy[-1][0] - min_x) * scale
-                    last_y = off_y + (sampled_xy[-1][1] - min_y) * scale
+                    last_x, last_y = mapped_xy[-1]
                     seg_parts.append(f"L{last_x:.2f},{last_y:.2f}")
-                width_values = [w for (_x, _y, w) in stroke]
-                mean_w = sum(width_values) / max(1, len(width_values))
-                width_seed = _stable_int_seed(f"runtime-sw:v1:{render_nonce}:{text}:{row}:{col}:{ch}:{stroke_idx}")
-                width_jitter = ((width_seed % 1000) / 1000.0 - 0.5) * 0.14
-                stroke_w = max(0.78, min(1.35, 0.78 + mean_w * 0.17 + width_jitter))
-                stroke_paths.append((" ".join(seg_parts), stroke_w))
-            x += char_w
+                # Keep baseline thickness consistent, and add light tail taper for kana.
+                base_sw = 1.00
+                if _is_kana_char(ch):
+                    seg_n = len(mapped_xy)
+                    if seg_n >= 2:
+                        for idx2 in range(1, seg_n):
+                            x0, y0 = mapped_xy[idx2 - 1]
+                            x1, y1 = mapped_xy[idx2]
+                            t = float(idx2) / float(max(1, seg_n - 1))
+                            tail = max(0.0, min(1.0, (t - 0.70) / 0.30))
+                            # End of stroke becomes thinner to mimic hane/harai.
+                            seg_sw = max(0.56, base_sw * (1.0 - 0.46 * tail))
+                            stroke_paths.append((f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}", seg_sw))
+                    else:
+                        stroke_paths.append((" ".join(seg_parts), base_sw))
+                elif _is_kanji_char(ch):
+                    kanji_sw_seed = _stable_int_seed(
+                        f"runtime-kanji-sw:v1:{render_nonce}:{text}:{row}:{col}:{ch}:{stroke_idx}"
+                    )
+                    sw_rnd = ((kanji_sw_seed % 1000) / 1000.0) - 0.5
+                    complexity = max(0.0, min(1.0, (len(draw_strokes) - 7) / 10.0))
+                    stroke_sw = max(0.78, min(1.18, base_sw + sw_rnd * (0.10 + complexity * 0.14)))
+                    stroke_paths.append((" ".join(seg_parts), stroke_sw))
+                else:
+                    stroke_paths.append((" ".join(seg_parts), base_sw))
+            x += advance_w
 
     watermark_y = height - 14
     path_svg = "".join(
@@ -1664,6 +2160,7 @@ def get_style_coverage(style_id: int, user: User = Depends(get_current_user), db
     missing_hira = "".join(ch for ch in HIRAGANA_TARGET if ch not in covered_chars)
     missing_kata = "".join(ch for ch in KATAKANA_TARGET if ch not in covered_chars)
     missing_kanji_core = "".join(ch for ch in KANJI_CORE_TARGET if ch not in covered_chars)
+    missing_latin = "".join(ch for ch in LATIN_TARGET if ch not in covered_chars)
     covered_in_target = "".join(ch for ch in TARGET_CHARS if ch in covered_chars)
     total_target = len(TARGET_CHARS)
     covered_count = len(covered_in_target)
@@ -1679,6 +2176,7 @@ def get_style_coverage(style_id: int, user: User = Depends(get_current_user), db
         missing_hiragana=missing_hira,
         missing_katakana=missing_kata,
         missing_kanji_core=missing_kanji_core,
+        missing_latin=missing_latin,
     )
 
 
@@ -1693,6 +2191,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
     # Use learned handwriting path for Japanese text except pure hiragana.
     # Pure hiragana uses dedicated runtime image->trajectory generation.
     use_runtime_hiragana = (not settings.text_only_mode) and _is_hiragana_text(payload.text)
+    use_runtime_latin = (not settings.text_only_mode) and _is_latin_text(payload.text)
     use_model_for_text = (
         (not settings.text_only_mode)
         and _is_japanese_text(payload.text)
@@ -1725,14 +2224,61 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
     def _fallback_svg(text: str) -> str:
         if _is_japanese_text(text):
             return text_to_svg_readable(text, WATERMARK_TEXT)
-        return text_to_svg(text, WATERMARK_TEXT)
+        return text_to_svg_english(text, WATERMARK_TEXT)
 
-    if settings.text_only_mode or (not use_model_for_text and not use_runtime_hiragana):
+    def _learned_style_trajectory(text: str) -> list[dict]:
+        # The web editor sends one request per selectable character. Running
+        # the learned model for every single character is too slow and was the
+        # source of "choppy line" regressions, so single-character conversion
+        # stays on the fast, stable runtime dataset path.
+        if len([ch for ch in text if not ch.isspace()]) <= 1:
+            return []
+        if style is None or style.disabled or style.status != "ready" or not style.adapter_key:
+            return []
+        try:
+            adapter_seed = get_storage().get_text(style.adapter_key)
+        except Exception:
+            return []
+        if not adapter_seed:
+            return []
+        try:
+            adapter_payload = loads(adapter_seed)
+        except Exception:
+            adapter_payload = {}
+        direct_text_exemplars = (
+            adapter_payload.get("user_char_exemplars_text")
+            if isinstance(adapter_payload, dict)
+            else None
+        )
+        if not isinstance(direct_text_exemplars, dict):
+            return []
+        # Avoid applying a learned style to characters the user never provided.
+        # The merged base exemplars are useful as a fallback, but using them as
+        # "learned" output caused thin scribble-like regressions.
+        for ch in text:
+            if ch.isspace() or _is_punctuation_char(ch):
+                continue
+            bucket = direct_text_exemplars.get(ch)
+            if not isinstance(bucket, list) or len(bucket) == 0:
+                return []
+        candidate = generate_trajectory(text, adapter_seed, settings.base_model_path)
+        min_score = max(34.0, len(text) * 9.0)
+        if _is_usable_trajectory(candidate, text) and _trajectory_candidate_score(candidate, text) >= min_score:
+            return candidate
+        return []
+
+    if settings.text_only_mode or (not use_model_for_text and not use_runtime_hiragana and not use_runtime_latin):
         trajectory = []
         svg = _fallback_svg(payload.text)
     elif _is_japanese_text(payload.text):
-        trajectory = []
-        svg = _runtime_kana_image_svg(payload.text, WATERMARK_TEXT)
+        # Prefer learned user style, then fall back to the stable runtime
+        # dataset renderer when the learned path cannot cover the text.
+        trajectory = _learned_style_trajectory(payload.text)
+        if trajectory:
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+        else:
+            trajectory = []
+            svg = _runtime_kana_image_svg(payload.text, WATERMARK_TEXT)
     elif use_runtime_hiragana:
         trajectory = []
         # 1) Prefer learned style (known-good route before recent regression).
@@ -1762,6 +2308,26 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             svg = _fallback_svg(payload.text)
         else:
             svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+    elif use_runtime_latin:
+        trajectory = []
+        if style is not None and style.adapter_key and style.status == "ready" and (not style.disabled):
+            try:
+                adapter_seed = get_storage().get_text(style.adapter_key)
+            except Exception:
+                adapter_seed = ""
+            if adapter_seed:
+                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
+                if _is_usable_trajectory(style_candidate, payload.text):
+                    trajectory = style_candidate
+        if not trajectory:
+            base_candidate = generate_trajectory(payload.text, "{}", settings.base_model_path)
+            if _is_usable_trajectory(base_candidate, payload.text):
+                trajectory = base_candidate
+        if trajectory and not settings.readable_text_svg:
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+        else:
+            trajectory = []
+            svg = _runtime_kana_image_svg(payload.text, WATERMARK_TEXT)
     else:
         if style.disabled or style.status != "ready" or not style.adapter_key:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="style_not_ready")

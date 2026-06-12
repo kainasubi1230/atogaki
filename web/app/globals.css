@@ -750,9 +750,15 @@ body {
 .handwriting-svg svg path {
   fill: none !important;
   stroke: currentColor !important;
+  vector-effect: non-scaling-stroke;
   stroke-linecap: round;
   stroke-linejoin: round;
   shape-rendering: geometricPrecision;
+}
+
+.handwriting-svg svg text:first-of-type,
+.handwriting-svg svg text:first-of-type tspan {
+  fill: currentColor !important;
 }
 
 .handwriting-editor {

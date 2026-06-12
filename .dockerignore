@@ -6,3 +6,10 @@ __pycache__
 node_modules
 .next
 **/.next
+.next-dev
+**/.next-dev
+.git
+storage
+web/.next
+web/.next-dev
+web/node_modules

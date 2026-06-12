@@ -9,7 +9,7 @@ RUN npm ci --workspace web
 
 COPY web ./web
 WORKDIR /app/web
-RUN rm -rf .next
+RUN rm -rf .next .next-dev
 
 EXPOSE 3000
 CMD ["sh", "-lc", "npm run build && npm run start -- --hostname 0.0.0.0 --port 3000"]

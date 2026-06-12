@@ -158,6 +158,20 @@ def main() -> None:
         default="balanced",
     )
 
+    punctuation = sub.add_parser("build-punctuation-dataset")
+    punctuation.add_argument("--output", default="storage/base/base_dataset_punctuation_v1.jsonl")
+    punctuation.add_argument("--variants-per-char", type=int, default=48)
+    punctuation.add_argument("--seed", type=int, default=20260529)
+    punctuation.add_argument("--append", action="store_true")
+    punctuation.add_argument("--replace", action="store_true")
+
+    latin = sub.add_parser("build-latin-dataset")
+    latin.add_argument("--output", default="storage/base/base_dataset_latin_v1.jsonl")
+    latin.add_argument("--variants-per-char", type=int, default=48)
+    latin.add_argument("--seed", type=int, default=20260612)
+    latin.add_argument("--append", action="store_true")
+    latin.add_argument("--replace", action="store_true")
+
     image_gen = sub.add_parser("generate-kana-images")
     image_gen.add_argument("--text", required=True, help="Characters to generate, e.g. あいうえお")
     image_gen.add_argument("--output-dir", default="storage/generated_kana")
@@ -382,6 +396,34 @@ def main() -> None:
             min_score=float(args.min_score),
             seed=int(args.seed),
             source_profile=args.source_profile,
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False))
+        return
+
+    if args.cmd == "build-punctuation-dataset":
+        from trainer.punctuation_dataset import build_punctuation_dataset
+
+        if args.append and args.replace:
+            raise ValueError("--append and --replace cannot be used together")
+        result = build_punctuation_dataset(
+            output_path=args.output,
+            variants_per_char=max(1, int(args.variants_per_char)),
+            seed=int(args.seed),
+            append=bool(args.append) and not bool(args.replace),
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False))
+        return
+
+    if args.cmd == "build-latin-dataset":
+        from trainer.latin_dataset import build_latin_dataset
+
+        if args.append and args.replace:
+            raise ValueError("--append and --replace cannot be used together")
+        result = build_latin_dataset(
+            output_path=args.output,
+            variants_per_char=max(1, int(args.variants_per_char)),
+            seed=int(args.seed),
+            append=bool(args.append) and not bool(args.replace),
         )
         print(json.dumps(result.__dict__, ensure_ascii=False))
         return

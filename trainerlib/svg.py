@@ -91,6 +91,67 @@ def text_to_svg_readable(text: str, watermark_text: str) -> str:
     )
 
 
+def text_to_svg_english(text: str, watermark_text: str) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        lines = [text if text else ""]
+
+    font_size = 44
+    line_height = 58
+    start_x = 22.0
+    start_y = 54.0
+
+    seed = int(hashlib.sha256(f"en:{text}".encode("utf-8")).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+
+    def advance(ch: str) -> float:
+        if ch == " ":
+            return 14.0 + rng.uniform(-1.2, 2.2)
+        if ch in "ilI.,'!|":
+            return 12.0 + rng.uniform(-1.0, 1.4)
+        if ch in "mwMW@#":
+            return 34.0 + rng.uniform(-2.4, 2.6)
+        if ch.isupper():
+            return 27.0 + rng.uniform(-2.0, 2.5)
+        return 23.0 + rng.uniform(-2.2, 2.2)
+
+    tspans: list[str] = []
+    max_x = start_x
+    for line_idx, line in enumerate(lines):
+        x = start_x + rng.uniform(-1.5, 1.5)
+        baseline = start_y + line_idx * line_height + rng.uniform(-1.0, 1.8)
+        for ch in line:
+            if ch == " ":
+                x += advance(ch)
+                continue
+            rotate = rng.uniform(-6.0, 6.0)
+            y = baseline + rng.uniform(-2.2, 2.8)
+            char_size = font_size + rng.uniform(-2.8, 2.0)
+            tspans.append(
+                f"<tspan x='{x:.1f}' y='{y:.1f}' rotate='{rotate:.1f}' font-size='{char_size:.1f}'>{escape(ch)}</tspan>"
+            )
+            x += advance(ch)
+        max_x = max(max_x, x)
+
+    width = max(240, int(max_x + 30))
+    height = max(118, int(start_y + len(lines) * line_height + 28))
+    watermark_y = height - 14
+    glyphs = "".join(tspans)
+    font_family = (
+        "'Segoe Print', 'Bradley Hand', 'Comic Sans MS', "
+        "'Marker Felt', 'Chalkboard SE', cursive"
+    )
+    return (
+        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}'>"
+        "<rect width='100%' height='100%' fill='white'/>"
+        f"<text fill='black' font-size='{font_size}' font-family=\"{font_family}\" "
+        "style='font-weight:500;letter-spacing:0'>"
+        f"{glyphs}</text>"
+        f"<text x='12' y='{watermark_y}' fill='#c62828' font-size='14'>{escape(watermark_text)}</text>"
+        "</svg>"
+    )
+
+
 def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
     if not trajectory:
         return (

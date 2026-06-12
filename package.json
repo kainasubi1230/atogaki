@@ -5,7 +5,7 @@
     "web"
   ],
   "scripts": {
-    "clean:web": "rm -rf web/.next",
+    "clean:web": "rm -rf web/.next web/.next-dev",
     "dev": "npm run dev --workspace web",
     "dev:clean": "npm run clean:web && npm run dev --workspace web",
     "build": "npm run build --workspace web",
