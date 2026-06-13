@@ -8,7 +8,7 @@ export type HandwritingPath = {
 
 export type CanvasItem = {
   id: string;
-  type: "text" | "square" | "circle" | "triangle" | "handwriting";
+  type: "text" | "square" | "circle" | "triangle" | "arrow" | "handwriting";
   x: number;
   y: number;
   text: string;
@@ -22,4 +22,5 @@ export type CanvasItem = {
   svgViewBox?: string;
   boxWidth?: number;
   boxHeight?: number;
+  rotate?: number;
 };

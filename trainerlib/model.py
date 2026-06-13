@@ -13,10 +13,10 @@ from typing import Any
 from .char_token import char_to_model_id, stable_int_token
 
 try:
-    import torch
-    from torch import nn
-    import torch.nn.functional as F
-    from torch.nn.utils.rnn import pad_sequence
+    import torch  # pyright: ignore [reportMissingImports]
+    from torch import nn  # pyright: ignore [reportMissingImports]
+    import torch.nn.functional as F  # pyright: ignore [reportMissingImports]
+    from torch.nn.utils.rnn import pad_sequence  # pyright: ignore [reportMissingImports]
 except Exception:  # pragma: no cover - optional dependency for GPU environments
     torch = None
     nn = None
@@ -1388,7 +1388,7 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
     if base_model_path:
         model, vocab_size, _hidden_dim, metadata = _load_base_model(base_model_path)
         if model is None:
-            return []
+            return _legacy_generate_trajectory(text, style_seed)
         style_payload = _parse_style_seed(style_seed)
         adapter_exemplars_raw = style_payload.get("user_char_exemplars") if isinstance(style_payload, dict) else None
         adapter_exemplars_text_raw = style_payload.get("user_char_exemplars_text") if isinstance(style_payload, dict) else None

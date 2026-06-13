@@ -515,9 +515,43 @@ function parseHandwritingSvg(svg: string): ParsedHandwriting | null {
   }
 }
 
+const rotatePoint = (angleDeg: number, point: { x: number; y: number }): { x: number; y: number } => {
+  const rad = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: point.x * cos - point.y * sin,
+    y: point.x * sin + point.y * cos,
+  };
+};
+
+const getItemSize = (item: CanvasItem) => {
+  if (item.type === "text") {
+    return {
+      width: item.boxWidth ?? 400,
+      height: item.boxHeight ?? 200,
+    };
+  } else if (item.type === "handwriting") {
+    const size = handwritingBoxSize(item);
+    return {
+      width: item.boxWidth ?? size.width,
+      height: item.boxHeight ?? size.height,
+    };
+  } else {
+    // shapes
+    return {
+      width: item.boxWidth ?? 120,
+      height: item.boxHeight ?? 120,
+    };
+  }
+};
+
 export function CanvasScreen({ token, userId, styleId }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<"paper" | "write">("paper");
+  const [customColor, setCustomColor] = useState("#ff6600");
+  const [savedColors, setSavedColors] = useState<string[]>([]);
   const [coverage, setCoverage] = useState<StyleCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
 
@@ -616,11 +650,26 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const [selectedId, setSelectedId] = useState<string | null>("1");
 
-  // Drag logic states
+  // Drag and rotation logic states
   const [isDragging, setIsDragging] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [isRotating, setIsRotating] = useState<string | null>(null);
+  const [rotateStart, setRotateStart] = useState({ pointerAngle: 0, startRotation: 0, centerX: 0, centerY: 0 });
+  
+  // Custom resize states
+  const [isResizing, setIsResizing] = useState<string | null>(null);
+  const [resizeDirection, setResizeDirection] = useState<'n' | 's' | 'e' | 'w' | null>(null);
+  const [resizeStart, setResizeStart] = useState({
+    x: 0,
+    y: 0,
+    startX: 0,
+    startY: 0,
+    startWidth: 0,
+    startHeight: 0,
+    rotate: 0,
+  });
   const [activeTool, setActiveTool] = useState<
-    "pointer" | "text" | "square" | "circle" | "triangle" | "eraser"
+    "pointer" | "text" | "square" | "circle" | "triangle" | "arrow"
   >(
     "pointer",
   );
@@ -639,16 +688,107 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           ),
         );
         setDragStart({ x: e.clientX, y: e.clientY });
+      } else if (isRotating) {
+        const dx = e.clientX - rotateStart.centerX;
+        const dy = e.clientY - rotateStart.centerY;
+        const currentPointerAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
+        const diff = currentPointerAngle - rotateStart.pointerAngle;
+        let nextRotation = Math.round(rotateStart.startRotation + diff);
+        
+        if (nextRotation > 180) nextRotation -= 360;
+        if (nextRotation < -180) nextRotation += 360;
+        
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === isRotating ? { ...it, rotate: nextRotation } : it,
+          ),
+        );
+      } else if (isResizing && resizeDirection) {
+        const dx = e.clientX - resizeStart.x;
+        const dy = e.clientY - resizeStart.y;
+
+        const rad = (resizeStart.rotate * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+
+        // Project global move vector into local space of the rotated object
+        const dxLocal = dx * cos + dy * sin;
+        const dyLocal = -dx * sin + dy * cos;
+
+        let newWidth = resizeStart.startWidth;
+        let newHeight = resizeStart.startHeight;
+
+        let anchorLocal = { x: 0, y: 0 };
+        let anchorLocalNew = { x: 0, y: 0 };
+
+        if (resizeDirection === "e") {
+          newWidth = Math.max(30, resizeStart.startWidth + dxLocal);
+          anchorLocal = { x: -resizeStart.startWidth / 2, y: 0 };
+          anchorLocalNew = { x: -newWidth / 2, y: 0 };
+        } else if (resizeDirection === "w") {
+          newWidth = Math.max(30, resizeStart.startWidth - dxLocal);
+          anchorLocal = { x: resizeStart.startWidth / 2, y: 0 };
+          anchorLocalNew = { x: newWidth / 2, y: 0 };
+        } else if (resizeDirection === "s") {
+          newHeight = Math.max(20, resizeStart.startHeight + dyLocal);
+          anchorLocal = { x: 0, y: -resizeStart.startHeight / 2 };
+          anchorLocalNew = { x: 0, y: -newHeight / 2 };
+        } else if (resizeDirection === "n") {
+          newHeight = Math.max(20, resizeStart.startHeight - dyLocal);
+          anchorLocal = { x: 0, y: resizeStart.startHeight / 2 };
+          anchorLocalNew = { x: 0, y: newHeight / 2 };
+        }
+
+        // Global anchor point (which shouldn't move)
+        const startCenter = {
+          x: resizeStart.startX + resizeStart.startWidth / 2,
+          y: resizeStart.startY + resizeStart.startHeight / 2,
+        };
+        const anchorGlobal = {
+          x: startCenter.x + (anchorLocal.x * cos - anchorLocal.y * sin),
+          y: startCenter.y + (anchorLocal.x * sin + anchorLocal.y * cos),
+        };
+
+        // Solve for new center such that the global anchor point is preserved
+        const newCenterX = anchorGlobal.x - (anchorLocalNew.x * cos - anchorLocalNew.y * sin);
+        const newCenterY = anchorGlobal.y - (anchorLocalNew.x * sin + anchorLocalNew.y * cos);
+
+        const newX = newCenterX - newWidth / 2;
+        const newY = newCenterY - newHeight / 2;
+
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === isResizing
+              ? {
+                  ...it,
+                  x: newX,
+                  y: newY,
+                  boxWidth: newWidth,
+                  boxHeight: newHeight,
+                }
+              : it,
+          ),
+        );
       }
     };
+    
     const handleGlobalUp = () => {
-      setIsDragging((prev) => {
-        if (prev !== null) commitHistory();
-        return null;
-      });
+      if (isDragging) {
+        setIsDragging(null);
+        commitHistory();
+      }
+      if (isRotating) {
+        setIsRotating(null);
+        commitHistory();
+      }
+      if (isResizing) {
+        setIsResizing(null);
+        setResizeDirection(null);
+        commitHistory();
+      }
     };
 
-    if (isDragging) {
+    if (isDragging || isRotating || isResizing) {
       window.addEventListener("pointermove", handleGlobalMove);
       window.addEventListener("pointerup", handleGlobalUp);
     }
@@ -656,7 +796,42 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       window.removeEventListener("pointermove", handleGlobalMove);
       window.removeEventListener("pointerup", handleGlobalUp);
     };
-  }, [isDragging, dragStart, commitHistory]);
+  }, [isDragging, dragStart, isRotating, rotateStart, isResizing, resizeDirection, resizeStart, commitHistory]);
+
+  useEffect(() => {
+    const savedColor = localStorage.getItem("machine_selected_color_v1");
+    if (savedColor) {
+      setTextColor(savedColor);
+    }
+    const savedCustomColor = localStorage.getItem("machine_custom_color_v1");
+    if (savedCustomColor) {
+      setCustomColor(savedCustomColor);
+    }
+    const savedColorsRaw = localStorage.getItem("machine_saved_colors_v1");
+    if (savedColorsRaw) {
+      try {
+        const parsed = JSON.parse(savedColorsRaw);
+        if (Array.isArray(parsed)) {
+          setSavedColors(parsed.filter((c) => typeof c === "string"));
+        }
+      } catch (e) {
+        console.error("Failed to parse saved colors", e);
+      }
+    }
+  }, []);
+
+  const saveColor = (color: string) => {
+    if (savedColors.includes(color)) return;
+    const next = [...savedColors, color];
+    setSavedColors(next);
+    localStorage.setItem("machine_saved_colors_v1", JSON.stringify(next));
+  };
+
+  const deleteSavedColor = (color: string) => {
+    const next = savedColors.filter((c) => c !== color);
+    setSavedColors(next);
+    localStorage.setItem("machine_saved_colors_v1", JSON.stringify(next));
+  };
 
   const handlePointerDown = (e: React.PointerEvent, id: string) => {
     setIsDragging(id);
@@ -665,13 +840,64 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
     e.preventDefault(); // prevent text selection while dragging
   };
 
+  const handleResizeStart = (e: React.PointerEvent, id: string, dir: 'n' | 's' | 'e' | 'w') => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const item = items.find((it) => it.id === id);
+    if (!item) return;
+
+    const size = getItemSize(item);
+
+    setIsResizing(id);
+    setResizeDirection(dir);
+    setResizeStart({
+      x: e.clientX,
+      y: e.clientY,
+      startX: item.x,
+      startY: item.y,
+      startWidth: size.width,
+      startHeight: size.height,
+      rotate: item.rotate ?? 0,
+    });
+  };
+
+  const handleRotateStart = (e: React.PointerEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const el = document.getElementById(`wrapper-${id}`);
+    if (!el) return;
+
+    const rect = el.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    const item = items.find((it) => it.id === id);
+    if (!item) return;
+
+    const dx = e.clientX - centerX;
+    const dy = e.clientY - centerY;
+    const pointerAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const startRotation = item.rotate ?? 0;
+
+    setIsRotating(id);
+    setRotateStart({
+      pointerAngle,
+      startRotation,
+      centerX,
+      centerY,
+    });
+  };
+
   const handlePaperClick = (e: React.PointerEvent) => {
     if (e.target === e.currentTarget) {
       const canCreate =
         activeTool === "text" ||
         activeTool === "square" ||
         activeTool === "circle" ||
-        activeTool === "triangle";
+        activeTool === "triangle" ||
+        activeTool === "arrow";
       if (canCreate) {
         const rect = e.currentTarget.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -709,6 +935,31 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const selectedItem = items.find((it) => it.id === selectedId);
   const currentColor = selectedItem ? selectedItem.color : textColor;
+  const isCustomColorActive = !COLORS.some((c) => c.color === currentColor);
+  const currentRotation = selectedItem ? (selectedItem.rotate ?? 0) : 0;
+
+  const handleRotationChange = (angle: number) => {
+    if (selectedId) {
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === selectedId ? { ...it, rotate: angle } : it,
+        ),
+      );
+    }
+  };
+  let customColorIconColor = "#5c665c";
+  if (isCustomColorActive) {
+    const hex = currentColor.replace("#", "");
+    if (hex.length === 6) {
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+      customColorIconColor = yiq >= 128 ? "#000" : "#fff";
+    } else {
+      customColorIconColor = "#fff";
+    }
+  }
   const currentFontSize =
     selectedItem &&
     selectedItem.type === "text" &&
@@ -730,6 +981,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handleColorChange = (newColor: string) => {
     setTextColor(newColor);
+    localStorage.setItem("machine_selected_color_v1", newColor);
     if (selectedId) {
       setItems(
         items.map((it) =>
@@ -788,6 +1040,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
     if (textsToConvert.length === 0) return;
 
     setIsProcessing(true);
+    const startTime = Date.now();
     try {
       const canConvertWithoutStyle = textsToConvert.every((item) => isAsciiRenderableText(item.text));
       if (!token || !userId || (!styleId && !canConvertWithoutStyle)) {
@@ -1087,6 +1340,11 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       console.error(e);
       alert("変換に失敗しました");
     } finally {
+      const elapsed = Date.now() - startTime;
+      const minTime = 1200; // Allow shoji doors to fully close (0.8s) + show text briefly (0.4s)
+      if (elapsed < minTime) {
+        await new Promise((resolve) => setTimeout(resolve, minTime - elapsed));
+      }
       setIsProcessing(false);
     }
   }
@@ -1163,8 +1421,24 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       </button>
 
       <div className={`sidebar ${!isMenuOpen ? "closed" : ""} animate-slide-up`}>
-        <div className="sidebar-section">
-          <h3>便箋デザイン</h3>
+        <div className="sidebar-tabs">
+          <button
+            className={`sidebar-tab-btn ${activeTab === "paper" ? "active" : ""}`}
+            onClick={() => setActiveTab("paper")}
+          >
+            便箋デザイン
+          </button>
+          <button
+            className={`sidebar-tab-btn ${activeTab === "write" ? "active" : ""}`}
+            onClick={() => setActiveTab("write")}
+          >
+            文字・ツール
+          </button>
+        </div>
+
+        {activeTab === "paper" && (
+          <div className="sidebar-section">
+            <h3>便箋デザイン</h3>
 
           <div style={{ marginBottom: "1rem" }}>
             <div
@@ -1217,11 +1491,12 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
             </div>
           </div>
         </div>
+        )}
 
-        <hr className="sidebar-divider" />
-
-        <div className="sidebar-section">
-          <h3>文字を書く</h3>
+        {activeTab === "write" && (
+          <>
+            <div className="sidebar-section">
+              <h3>文字を書く</h3>
           <div className="tool-grid">
             <button
               className={`tool-btn ${activeTool === "pointer" ? "active" : ""}`}
@@ -1264,33 +1539,13 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               </svg>
               <span>文字</span>
             </button>
-            <button
-              className={`tool-btn ${activeTool === "eraser" ? "active" : ""}`}
-              onClick={() => setActiveTool("eraser")}
-              title="手書きの線を消す"
-            >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 20H7L3 16l9-9 8 8-5 5z"></path>
-                <path d="M6 13l5 5"></path>
-              </svg>
-              <span>消しゴム</span>
-            </button>
           </div>
         </div>
 
         <hr className="sidebar-divider" />
 
         <div className="sidebar-section">
-          <h3>スタンプ（図形）</h3>
+          <h3>図形</h3>
           <div className="tool-grid">
             <button
               className={`tool-btn ${activeTool === "square" ? "active" : ""}`}
@@ -1348,6 +1603,26 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
               </svg>
               <span>三角</span>
+            </button>
+            <button
+              className={`tool-btn ${activeTool === "arrow" ? "active" : ""}`}
+              onClick={() => setActiveTool("arrow")}
+              title="矢印"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+                <polyline points="12 5 19 12 12 19"></polyline>
+              </svg>
+              <span>矢印</span>
             </button>
           </div>
         </div>
@@ -1480,18 +1755,133 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                 }}
               />
             ))}
-            <div className="color-picker-wrapper" title="自由な色を選ぶ">
+            <div 
+              className={`color-picker-wrapper ${isCustomColorActive ? "active" : ""}`}
+              title="自由な色を選ぶ"
+              style={{
+                backgroundColor: isCustomColorActive ? currentColor : "#fcfaf7",
+                borderStyle: isCustomColorActive ? "solid" : "dashed"
+              }}
+              onClick={() => {
+                if (!isCustomColorActive) {
+                  handleColorChange(customColor);
+                  commitHistory();
+                }
+              }}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={customColorIconColor}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ 
+                  position: "absolute", 
+                  zIndex: 2, 
+                  pointerEvents: "none",
+                  filter: isCustomColorActive ? "drop-shadow(0px 1px 1px rgba(0,0,0,0.3))" : "none"
+                }}
+              >
+                <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 14.7255 3.09032 17.1962 4.85857 19C5.02845 19.17 5.11339 19.255 5.21855 19.3005C5.32371 19.346 5.48316 19.346 5.80206 19.346H7C7.55228 19.346 8 18.8983 8 18.346C8 17.7937 8.44772 17.346 9 17.346H11C11.5523 17.346 12 16.8983 12 16.346V15C12 14.4477 12.4477 14 13 14H15C16.1046 14 17 13.1046 17 12V11C17 9.89543 16.1046 9 15 9H9C7.89543 9 7 9.89543 7 11V14.346" />
+              </svg>
               <input
                 type="color"
                 className="color-picker-input"
-                value={currentColor}
-                onChange={(e) => handleColorChange(e.target.value)}
+                style={{ pointerEvents: isCustomColorActive ? "auto" : "none" }}
+                value={customColor}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCustomColor(val);
+                  localStorage.setItem("machine_custom_color_v1", val);
+                  handleColorChange(val);
+                }}
                 onBlur={commitHistory}
               />
             </div>
           </div>
-        </div>
-      </div>
+            {isCustomColorActive && !savedColors.includes(currentColor) && (
+              <div style={{ width: "100%", marginTop: "0.6rem" }}>
+                <button
+                  onClick={() => saveColor(currentColor)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "transparent",
+                    border: "1px dashed rgba(0, 0, 0, 0.25)",
+                    borderRadius: "4px",
+                    padding: "6px 10px",
+                    fontSize: "0.78rem",
+                    color: "var(--text-secondary)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    transition: "all 0.2s",
+                    backgroundColor: "#fcfaf7",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(0,0,0,0.4)";
+                    e.currentTarget.style.color = "var(--text-primary)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(0,0,0,0.25)";
+                    e.currentTarget.style.color = "var(--text-secondary)";
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  <span>この色をお気に入りに保存</span>
+                </button>
+              </div>
+            )}
+
+            {savedColors.length > 0 && (
+              <div 
+                style={{ 
+                  display: "flex", 
+                  gap: "0.8rem", 
+                  flexWrap: "wrap", 
+                  marginTop: "0.8rem", 
+                  width: "100%",
+                  borderTop: "1px dotted rgba(0, 0, 0, 0.15)",
+                  paddingTop: "0.8rem"
+                }}
+              >
+                <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", width: "100%", marginBottom: "-0.4rem" }}>
+                  マイインク（保存した色）
+                </div>
+                {savedColors.map((color) => (
+                  <div key={color} className="saved-color-container">
+                    <button
+                      className={`color-btn ${currentColor === color ? "active" : ""}`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => {
+                        handleColorChange(color);
+                        commitHistory();
+                      }}
+                    />
+                    <button
+                      className="delete-color-btn"
+                      title="削除"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSavedColor(color);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
 
       <div className="canvas-main">
         {styleId && (
@@ -1565,12 +1955,17 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           {items.map((rawItem) => {
             const item = punctuationRenderItem(rawItem);
             return (
-            <div
-              key={item.id}
-              className={`draggable-wrapper ${selectedId === item.id ? "selected" : ""}`}
-              style={{ top: item.y, left: item.x }}
-              onPointerDown={() => setSelectedId(item.id)}
-            >
+             <div
+               key={item.id}
+               id={`wrapper-${item.id}`}
+               className={`draggable-wrapper ${selectedId === item.id ? "selected" : ""}`}
+               style={{
+                 top: item.y,
+                 left: item.x,
+                 transform: item.rotate ? `rotate(${item.rotate}deg)` : undefined
+               }}
+               onPointerDown={() => setSelectedId(item.id)}
+             >
               <div className="drag-header">
                 <div
                   className="drag-handle"
@@ -1642,6 +2037,8 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                     <textarea
                       className={`letter-input style-${paperStyle} ${item.isConverted && !isPunctuationOnlyText(item.text) ? "hidden-text" : ""}`}
                       style={{
+                        width: item.boxWidth ? `${item.boxWidth}px` : undefined,
+                        height: item.boxHeight ? `${item.boxHeight}px` : undefined,
                         color: item.color,
                         fontSize: item.fontSize
                           ? `${item.fontSize}px`
@@ -1683,7 +2080,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                   )
                 ) : item.type === "handwriting" ? (
                   <div
-                    className={`handwriting-editor ${selectedId === item.id ? "selected" : ""} ${activeTool === "eraser" ? "eraser-mode" : ""}`}
+                    className={`handwriting-editor ${selectedId === item.id ? "selected" : ""}`}
                     style={{
                       width: `${handwritingBoxSize(item).width}px`,
                       height: `${handwritingBoxSize(item).height}px`,
@@ -1712,33 +2109,66 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                             vectorEffect="non-scaling-stroke"
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            onPointerDown={(e) => {
-                              if (activeTool !== "eraser") return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setItems((prev) =>
-                                prev.map((it) =>
-                                  it.id === item.id
-                                    ? {
-                                        ...it,
-                                        paths: (it.paths ?? []).filter((sp) => sp.id !== p.id),
-                                      }
-                                    : it,
-                                ),
-                              );
-                              commitHistory();
-                            }}
                           />
                         ))}
                       </svg>
                     )}
                   </div>
                 ) : (
-                  <div className="shape-wrapper">
+                  <div
+                    className="shape-wrapper"
+                    style={{
+                      width: item.boxWidth ? `${item.boxWidth}px` : undefined,
+                      height: item.boxHeight ? `${item.boxHeight}px` : undefined,
+                    }}
+                  >
                     <ShapeRenderer type={item.type} color={item.color} />
                   </div>
                 )}
               </div>
+
+              {/* Rotate Handle */}
+              <div
+                className="rotate-handle"
+                onPointerDown={(e) => handleRotateStart(e, item.id)}
+                title="ドラッグして回転"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                </svg>
+              </div>
+
+              {/* Resize Handles */}
+              {selectedId === item.id && (
+                <>
+                  <div
+                    className="resize-handle resize-top"
+                    onPointerDown={(e) => handleResizeStart(e, item.id, "n")}
+                  />
+                  <div
+                    className="resize-handle resize-bottom"
+                    onPointerDown={(e) => handleResizeStart(e, item.id, "s")}
+                  />
+                  <div
+                    className="resize-handle resize-left"
+                    onPointerDown={(e) => handleResizeStart(e, item.id, "w")}
+                  />
+                  <div
+                    className="resize-handle resize-right"
+                    onPointerDown={(e) => handleResizeStart(e, item.id, "e")}
+                  />
+                </>
+              )}
             </div>
           );})}
         </div>
@@ -1761,6 +2191,33 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           >
             {isProcessing ? "変換中..." : "筆跡に変換する"}
           </button>
+        </div>
+      </div>
+
+      {/* Shoji Sliding Doors Transition Effect */}
+      <div className={`shoji-overlay ${isProcessing ? "active" : ""}`}>
+        <div className="shoji-door left">
+          <div className="shoji-grid">
+            {Array.from({ length: 24 }).map((_, i) => (
+              <div key={i} className="shoji-cell" />
+            ))}
+          </div>
+          <div className="shoji-hikite">
+            <div className="shoji-hikite-inner" />
+          </div>
+        </div>
+        <div className="shoji-door right">
+          <div className="shoji-grid">
+            {Array.from({ length: 24 }).map((_, i) => (
+              <div key={i} className="shoji-cell" />
+            ))}
+          </div>
+          <div className="shoji-hikite">
+            <div className="shoji-hikite-inner" />
+          </div>
+        </div>
+        <div className="shoji-content">
+          <div className="shoji-text">筆跡構築中</div>
         </div>
       </div>
     </div>

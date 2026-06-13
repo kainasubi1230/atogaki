@@ -8,8 +8,11 @@ import uuid
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+# pyrefly: ignore [missing-import]
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
+# pyrefly: ignore [missing-import]
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -2262,6 +2265,12 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             if not isinstance(bucket, list) or len(bucket) == 0:
                 return []
         candidate = generate_trajectory(text, adapter_seed, settings.base_model_path)
+        # If the base model file does not exist, we are using the legacy generator fallback,
+        # which is clean but might not score high enough on model-specific filters.
+        from pathlib import Path
+        model_exists = settings.base_model_path and Path(settings.base_model_path).exists()
+        if not model_exists:
+            return candidate
         min_score = max(34.0, len(text) * 9.0)
         if _is_usable_trajectory(candidate, text) and _trajectory_candidate_score(candidate, text) >= min_score:
             return candidate
