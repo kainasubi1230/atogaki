@@ -101,7 +101,7 @@ _PUNCTUATION_CHARS = set(
 )
 _KANA_SIZE_BIAS: dict[str, float] = {
     # Tall/narrow kana tend to look oversized after box normalization.
-    "い": 0.60,
+    "い": 0.46,
     "り": 0.76,
     "し": 0.78,
     "く": 0.85,
@@ -1118,12 +1118,14 @@ def _kana_optical_size_factor(
     factor = 1.0
     if ch in _OPTICALLY_NARROW_KANA:
         pressure = 0.035 + max(0.0, aspect - 1.24) * 0.12 + max(0.0, density - 1.30) * 0.055
+        if ch == "い":
+            pressure += 0.14
         if line_balance.get("narrow_ratio", 0.0) < 0.42:
             pressure += 0.085
-        factor *= max(0.62, 1.0 - pressure)
+        factor *= max(0.50 if ch == "い" else 0.62, 1.0 - pressure)
     elif ch in _OPTICALLY_ROUND_KANA:
         factor *= 1.015
-    return max(0.60, min(1.08, factor))
+    return max(0.48 if ch == "い" else 0.60, min(1.08, factor))
 
 
 def _generate_hiragana_runtime_trajectory(text: str) -> list[dict]:
@@ -1534,6 +1536,12 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                         cell_offset_x -= char_w * 0.14
                         cell_offset_y += char_h * 0.13 + extra_drop
                         advance_w = min(advance_w, char_w * 0.64)
+            if ch == "い":
+                cell_w = char_w * 0.76
+                cell_h = char_h * 0.74
+                cell_offset_x = char_w * 0.08
+                cell_offset_y = char_h * 0.13
+                advance_w = char_w * 0.72
             if _is_latin_char(ch):
                 if ch.isupper():
                     cell_w = char_w * 0.72
@@ -1774,6 +1782,8 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     seg_parts.append(f"L{last_x:.2f},{last_y:.2f}")
                 # Keep baseline thickness consistent, and add light tail taper for kana.
                 base_sw = 1.00
+                if ch == "い":
+                    base_sw = 0.82
                 if _is_kana_char(ch):
                     seg_n = len(mapped_xy)
                     if seg_n >= 2:
