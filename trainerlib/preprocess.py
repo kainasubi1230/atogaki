@@ -70,7 +70,34 @@ def preprocess_scan(image_bytes: bytes) -> dict:
     if contrast < 9.0:
         return {"success": False, "reason_code": LOW_CONTRAST}
 
-    binary = arr < 200
+    # Calculate Otsu's threshold to dynamically separate dark text from light background (e.g. shadow handling)
+    try:
+        hist = np.bincount(arr.ravel(), minlength=256).astype(np.float64)
+        total = float(arr.size)
+        sum_total = float(np.dot(np.arange(256, dtype=np.float64), hist))
+        sum_bg = 0.0
+        weight_bg = 0.0
+        best_threshold = 127
+        max_between = -1.0
+        for t in range(256):
+            weight_bg += hist[t]
+            if weight_bg <= 0.0:
+                continue
+            weight_fg = total - weight_bg
+            if weight_fg <= 0.0:
+                break
+            sum_bg += t * hist[t]
+            mean_bg = sum_bg / weight_bg
+            mean_fg = (sum_total - sum_bg) / weight_fg
+            between = weight_bg * weight_fg * ((mean_bg - mean_fg) ** 2)
+            if between > max_between:
+                max_between = between
+                best_threshold = t
+        threshold = max(100, min(220, best_threshold))
+    except Exception:
+        threshold = 200
+
+    binary = arr < threshold
     if float(binary.mean()) < 0.003:
         return {"success": False, "reason_code": NO_TEXT_DETECTED}
 
@@ -97,7 +124,7 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 }
             )
 
-    if len(segments) < 2:
+    if len(segments) < 1:
         return {"success": False, "reason_code": TOO_FEW_SEGMENTS}
 
     return {
