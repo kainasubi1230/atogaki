@@ -60,6 +60,18 @@ def main() -> None:
     import_mnist.add_argument("--max-points", type=int, default=120)
     import_mnist.add_argument("--min-points", type=int, default=8)
 
+    import_emnist = sub.add_parser("import-public-emnist")
+    import_emnist.add_argument("--output", default="storage/base/base_dataset.jsonl")
+    import_emnist.add_argument("--count", type=int, default=40000)
+    import_emnist.add_argument("--split", choices=["train", "test", "all"], default="train")
+    import_emnist.add_argument("--seed", type=int, default=42)
+    import_emnist.add_argument("--cache-dir", default="storage/public_cache/emnist")
+    import_emnist.add_argument("--append", action="store_true")
+    import_emnist.add_argument("--replace", action="store_true")
+    import_emnist.add_argument("--threshold", type=int, default=200)
+    import_emnist.add_argument("--max-points", type=int, default=120)
+    import_emnist.add_argument("--min-points", type=int, default=8)
+
     import_hiragana = sub.add_parser("import-hiragana-images")
     import_hiragana.add_argument("--output", default="storage/base/base_dataset_hiragana_images.jsonl")
     import_hiragana.add_argument("--input-dir", default="storage/public_cache/net_datasets/hiragana-dataset/hiragana_images")
@@ -247,6 +259,30 @@ def main() -> None:
         if args.append:
             append = True
         result = import_mnist_to_base_dataset(
+            output_path=args.output,
+            target_count=args.count,
+            split=args.split,
+            seed=args.seed,
+            cache_dir=args.cache_dir,
+            append=append,
+            threshold=args.threshold,
+            max_points=args.max_points,
+            min_points=args.min_points,
+        )
+        print(json.dumps(result.__dict__, ensure_ascii=False))
+        return
+
+    if args.cmd == "import-public-emnist":
+        from trainer.public_dataset import import_emnist_to_base_dataset
+
+        if args.append and args.replace:
+            raise ValueError("--append and --replace cannot be used together")
+        append = True
+        if args.replace:
+            append = False
+        if args.append:
+            append = True
+        result = import_emnist_to_base_dataset(
             output_path=args.output,
             target_count=args.count,
             split=args.split,

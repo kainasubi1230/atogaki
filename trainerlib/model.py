@@ -1033,6 +1033,153 @@ def _postprocess_strokes(points: list[dict]) -> list[dict]:
     return out
 
 
+def _seq_to_strokes(seq):
+    strokes = []
+    curr = []
+    lx, ly = 0.0, 0.0
+    for row in seq:
+        if len(row) < 4:
+            continue
+        dx = float(row[0]) * 20.0
+        dy = float(row[1]) * 20.0
+        lx += dx
+        ly += dy
+        pen = float(row[2]) > 0.5
+        width = float(row[3])
+        if pen:
+            curr.append((lx, ly, width))
+        else:
+            if curr:
+                strokes.append(curr)
+                curr = []
+    if curr:
+        strokes.append(curr)
+    return strokes
+
+
+def _strokes_to_seq(strokes):
+    seq = []
+    lx, ly = 0.0, 0.0
+    for s_idx, stroke in enumerate(strokes):
+        if not stroke:
+            continue
+        for p_idx, (x, y, w) in enumerate(stroke):
+            dx = x - lx
+            dy = y - ly
+            if p_idx == 0 and s_idx > 0:
+                seq.append([dx / 20.0, dy / 20.0, 0.0, w])
+                lx, ly = x, y
+                seq.append([0.0, 0.0, 1.0, w])
+            elif p_idx == 0 and s_idx == 0:
+                seq.append([dx / 20.0, dy / 20.0, 1.0, w])
+                lx, ly = x, y
+            else:
+                seq.append([dx / 20.0, dy / 20.0, 1.0, w])
+                lx, ly = x, y
+    return seq
+
+
+def _resample_stroke(stroke, target_len):
+    if not stroke:
+        return []
+    if len(stroke) < 2 or target_len <= 1:
+        return [stroke[0]] * target_len
+    
+    dists = [0.0]
+    for idx in range(1, len(stroke)):
+        x0, y0, _ = stroke[idx - 1]
+        x1, y1, _ = stroke[idx]
+        dists.append(dists[-1] + hypot(x1 - x0, y1 - y0))
+    
+    total_dist = dists[-1]
+    if total_dist <= 1e-6:
+        return [stroke[0]] * target_len
+    
+    new_stroke = []
+    for idx in range(target_len):
+        t = float(idx) / float(target_len - 1)
+        target_d = t * total_dist
+        seg_idx = 0
+        while seg_idx < len(dists) - 1 and dists[seg_idx + 1] < target_d:
+            seg_idx += 1
+        d0 = dists[seg_idx]
+        d1 = dists[seg_idx + 1]
+        factor = (target_d - d0) / (d1 - d0) if (d1 - d0) > 1e-6 else 0.0
+        x0, y0, w0 = stroke[seg_idx]
+        x1, y1, w1 = stroke[seg_idx + 1]
+        nx = x0 + factor * (x1 - x0)
+        ny = y0 + factor * (y1 - y0)
+        nw = w0 + factor * (w1 - w0)
+        new_stroke.append((nx, ny, nw))
+    return new_stroke
+
+
+def _align_character_bbox(strokes_to_align, reference_strokes):
+    all_pts_ref = [p for stroke in reference_strokes for p in stroke]
+    if not all_pts_ref:
+        return strokes_to_align
+    xs_ref = [p[0] for p in all_pts_ref]
+    ys_ref = [p[1] for p in all_pts_ref]
+    min_x_ref, max_x_ref = min(xs_ref), max(xs_ref)
+    min_y_ref, max_y_ref = min(ys_ref), max(ys_ref)
+    w_ref = max_x_ref - min_x_ref
+    h_ref = max_y_ref - min_y_ref
+
+    all_pts_align = [p for stroke in strokes_to_align for p in stroke]
+    if not all_pts_align:
+        return strokes_to_align
+    xs_align = [p[0] for p in all_pts_align]
+    ys_align = [p[1] for p in all_pts_align]
+    min_x_align, max_x_align = min(xs_align), max(xs_align)
+    min_y_align, max_y_align = min(ys_align), max(ys_align)
+    w_align = max_x_align - min_x_align
+    h_align = max_y_align - min_y_align
+
+    aligned_strokes = []
+    for stroke in strokes_to_align:
+        aligned_stroke = []
+        for x, y, w in stroke:
+            nx = (x - min_x_align) / max(1e-6, w_align)
+            ny = (y - min_y_align) / max(1e-6, h_align)
+            rx = min_x_ref + nx * w_ref
+            ry = min_y_ref + ny * h_ref
+            aligned_stroke.append((rx, ry, w))
+        aligned_strokes.append(aligned_stroke)
+    return aligned_strokes
+
+
+def _morph_strokes(strokes_u, strokes_b, correction):
+    if not strokes_u:
+        return strokes_b
+    if not strokes_b:
+        return strokes_u
+    
+    if len(strokes_u) != len(strokes_b):
+        if correction > 0.5:
+            return _align_character_bbox(strokes_b, strokes_u)
+        return strokes_u
+
+    strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
+    morphed = []
+    for i in range(len(strokes_u)):
+        su = strokes_u[i]
+        sb = strokes_b_aligned[i]
+        target_len = max(len(su), len(sb))
+        ru = _resample_stroke(su, target_len)
+        rb = _resample_stroke(sb, target_len)
+        
+        m_stroke = []
+        for j in range(target_len):
+            ux, uy, uw = ru[j]
+            bx, by, bw = rb[j]
+            mx = ux * (1.0 - correction) + bx * correction
+            my = uy * (1.0 - correction) + by * correction
+            mw = uw * (1.0 - correction) + bw * correction
+            m_stroke.append((mx, my, mw))
+        morphed.append(m_stroke)
+    return morphed
+
+
 def _trajectory_from_exemplar(
     text: str,
     style_seed: str,
@@ -1040,6 +1187,7 @@ def _trajectory_from_exemplar(
     vocab_size: int,
     rng: random.Random,
     style_profile: dict[str, Any] | None = None,
+    correction: float = 0.70,
 ) -> list[dict]:
     char_exemplars = metadata.get("char_exemplars")
     if not isinstance(char_exemplars, dict):
@@ -1058,20 +1206,54 @@ def _trajectory_from_exemplar(
     shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
     jitter_scale = max(0.82, min(1.20, float(style_cfg.get("jitter_scale", 1.0)))) if style_cfg else 1.0
 
+    if correction > 0.0:
+        scale_x_bias = scale_x_bias * (1.0 - correction) + 1.0 * correction
+        scale_y_bias = scale_y_bias * (1.0 - correction) + 1.0 * correction
+        rot_bias_deg = rot_bias_deg * (1.0 - correction)
+        shear_x = shear_x * (1.0 - correction)
+        shear_y = shear_y * (1.0 - correction)
+        jitter_scale = jitter_scale * (1.0 - correction)
+
     for char in text:
         is_katakana = _is_katakana_char(char)
-        text_map = metadata.get("char_exemplars_text")
-        bucket = None
-        if isinstance(text_map, dict):
-            by_text = text_map.get(char)
-            if isinstance(by_text, list) and by_text:
-                bucket = by_text
-        if bucket is None:
+        
+        user_char_exemplars = metadata.get("user_char_exemplars")
+        user_char_exemplars_text = metadata.get("user_char_exemplars_text")
+        base_char_exemplars = metadata.get("base_char_exemplars")
+        base_char_exemplars_text = metadata.get("base_char_exemplars_text")
+
+        user_bucket = None
+        if isinstance(user_char_exemplars_text, dict):
+            user_bucket = user_char_exemplars_text.get(char)
+        if user_bucket is None and isinstance(user_char_exemplars, dict):
             char_id = _char_token(char, vocab_size)
-            bucket = char_exemplars.get(str(char_id))
-        if not isinstance(bucket, list) or not bucket:
-            return []
-        seq = _pick_best_exemplar_sequence(bucket, rng, trials=28)
+            user_bucket = user_char_exemplars.get(str(char_id))
+
+        base_bucket = None
+        if isinstance(base_char_exemplars_text, dict):
+            base_bucket = base_char_exemplars_text.get(char)
+        if base_bucket is None and isinstance(base_char_exemplars, dict):
+            char_id = _char_token(char, vocab_size)
+            base_bucket = base_char_exemplars.get(str(char_id))
+
+        seq_user = None
+        if user_bucket:
+            seq_user = _pick_best_exemplar_sequence(user_bucket, rng, trials=28)
+        seq_base = None
+        if base_bucket:
+            seq_base = _pick_best_exemplar_sequence(base_bucket, rng, trials=28)
+
+        seq = None
+        if seq_user and seq_base and correction > 0.0:
+            strokes_u = _seq_to_strokes(seq_user)
+            strokes_b = _seq_to_strokes(seq_base)
+            morphed_strokes = _morph_strokes(strokes_u, strokes_b, correction)
+            seq = _strokes_to_seq(morphed_strokes)
+        elif seq_user:
+            seq = seq_user
+        else:
+            seq = seq_base
+
         if not isinstance(seq, list) or len(seq) < 8:
             return []
         # Overlong trajectories tend to become wobbly lines after normalization.
@@ -1173,7 +1355,7 @@ def _trajectory_from_exemplar(
 
         x_offset += char_w + (rng.uniform(4.8, 6.2) if is_katakana else rng.uniform(5.0, 8.0))
         y_offset += rng.uniform(-0.25, 0.25)
-    smooth_passes = 3
+    smooth_passes = 3 + int(correction * 5)
     smoothed = _smooth_trajectory_points(points, passes=smooth_passes)
     return _postprocess_strokes(smoothed)
 
@@ -1382,7 +1564,9 @@ def _is_plausible_trajectory(points: list[dict], text: str) -> bool:
     return True
 
 
-def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None) -> list[dict]:
+def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None, correction: float | None = 0.70) -> list[dict]:
+    if correction is None:
+        correction = 0.70
     if not text:
         return []
     if base_model_path:
@@ -1405,6 +1589,11 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             run_metadata["char_exemplars"] = merged_exemplars
         if merged_text_exemplars:
             run_metadata["char_exemplars_text"] = merged_text_exemplars
+        run_metadata["user_char_exemplars"] = adapter_exemplars_raw
+        run_metadata["user_char_exemplars_text"] = adapter_exemplars_text_raw
+        run_metadata["base_char_exemplars"] = metadata.get("char_exemplars") if isinstance(metadata, dict) else None
+        run_metadata["base_char_exemplars_text"] = metadata.get("char_exemplars_text") if isinstance(metadata, dict) else None
+        
         if not _has_exemplar_for_text(
             text,
             vocab_size=vocab_size,
@@ -1424,6 +1613,7 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             vocab_size,
             random.Random(rng_seed ^ 0x9E3779B9),
             style_profile=style_profile if isinstance(style_profile, dict) else None,
+            correction=correction,
         )
         if preferred and _trajectory_quality_score(preferred, text) > float("-inf"):
             return preferred
@@ -1440,6 +1630,7 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
                     vocab_size,
                     rng,
                     style_profile=style_profile if isinstance(style_profile, dict) else None,
+                    correction=correction,
                 )
             else:
                 generated = _trajectory_from_model(

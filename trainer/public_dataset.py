@@ -404,66 +404,125 @@ def _turn_cost(
 
 
 def _component_to_nonoverlap_paths(component: list[tuple[int, int]], mask: np.ndarray) -> list[list[tuple[int, int]]]:
-    # Decompose component into several one-pass paths without backtracking on
-    # already visited pixels, to avoid stroke bolding caused by overlaps.
+    """Traverse a connected skeleton component as a single continuous path using a
+    DFS-with-backtrack strategy (approximating an Euler path).
+
+    When greedy traversal reaches a dead end while unvisited pixels remain, the
+    algorithm backtracks along the already-visited path until it finds a pixel that
+    has unvisited neighbors, then continues forward from there.  This produces ONE
+    connected path per component rather than many fragments, eliminating mid-stroke
+    pen-up jumps (e.g. the 'H' right leg splitting into two pieces).
+    """
     h, w = mask.shape
     pixels = set(component)
     if not pixels:
         return []
 
+    # Build adjacency (8-connected).
     neighbors: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for py, px in pixels:
-        nbr = []
-        for ny, nx in _iter_neighbors(py, px, h, w):
-            if (ny, nx) in pixels:
-                nbr.append((ny, nx))
+        nbr = [n for n in (
+            (py + dy, px + dx) for dy, dx in _NEIGHBOR_OFFSETS
+        ) if (n[0], n[1]) in pixels and 0 <= n[0] < h and 0 <= n[1] < w]
         neighbors[(py, px)] = nbr
 
-    remaining = set(pixels)
-    paths: list[list[tuple[int, int]]] = []
+    # Start from an endpoint (degree ≤ 1) if available; prefer top-left.
+    endpoints = [p for p in pixels if len(neighbors[p]) <= 1]
+    if endpoints:
+        start = min(endpoints, key=lambda p: (p[1], p[0]))
+    else:
+        start = min(pixels, key=lambda p: (p[1], p[0]))
 
-    while remaining:
-        endpoints = [p for p in remaining if sum((n in remaining) for n in neighbors[p]) <= 1]
-        if endpoints:
-            start = min(endpoints, key=lambda p: (p[1], p[0]))
-        else:
-            start = min(remaining, key=lambda p: (p[1], p[0]))
-        remaining.remove(start)
-        path = [start]
-        prev: tuple[int, int] | None = None
-        cur = start
+    visited: set[tuple[int, int]] = set()
+    path: list[tuple[int, int]] = [start]
+    visited.add(start)
+    prev: tuple[int, int] | None = None
+    cur = start
 
-        while True:
-            candidates = [n for n in neighbors[cur] if n in remaining]
-            if not candidates:
-                break
-            # Prefer smooth continuation, then lower local branching.
-            ranked = sorted(
-                candidates,
-                key=lambda n: (
-                    _turn_cost(prev, cur, n),
-                    sum((m in remaining) for m in neighbors[n]),
-                    n[1],
-                    n[0],
-                ),
-            )
-            nxt = ranked[0]
-            remaining.remove(nxt)
+    while len(visited) < len(pixels):
+        # Prefer unvisited neighbors; sort by turn cost for smoothness.
+        unvisited = [n for n in neighbors[cur] if n not in visited]
+        if unvisited:
+            nxt = min(unvisited, key=lambda n: _turn_cost(prev, cur, n))
+            visited.add(nxt)
             path.append(nxt)
             prev, cur = cur, nxt
+        else:
+            # Dead end: backtrack along already-visited path until we find a
+            # pixel adjacent to an unvisited one.
+            backtrack_idx = len(path) - 2  # go one step back
+            found = False
+            while backtrack_idx >= 0:
+                candidate = path[backtrack_idx]
+                if any(n not in visited for n in neighbors[candidate]):
+                    # Walk back to this pixel (append the return path).
+                    path.extend(reversed(path[backtrack_idx + 1:]))
+                    prev = path[-2] if len(path) >= 2 else None
+                    cur = candidate
+                    found = True
+                    break
+                backtrack_idx -= 1
+            if not found:
+                break  # All reachable pixels visited.
 
-        if len(path) >= 2:
-            paths.append(path)
-    return paths
+    # Trim tiny duplicate-point runs at the end of backtracking segments.
+    return [path] if len(path) >= 2 else []
 
 
 def _resample_path(points: list[tuple[int, int]], keep_points: int) -> list[tuple[int, int]]:
-    if len(points) <= keep_points:
+    """Arc-length based resampling: places keep_points evenly along the actual
+    curve length to avoid the bunching/gapping produced by index-uniform sampling."""
+    n = len(points)
+    if n <= keep_points:
         return points
     if keep_points <= 1:
         return [points[0]]
-    idx = np.linspace(0, len(points) - 1, num=keep_points, dtype=np.int32)
-    return [points[int(i)] for i in idx.tolist()]
+    # Build cumulative arc-length table.
+    dists = [0.0]
+    for i in range(1, n):
+        dy = points[i][0] - points[i - 1][0]
+        dx = points[i][1] - points[i - 1][1]
+        dists.append(dists[-1] + float((dy * dy + dx * dx) ** 0.5))
+    total = dists[-1]
+    if total < 1e-9:
+        idx = np.linspace(0, n - 1, num=keep_points, dtype=np.int32)
+        return [points[int(i)] for i in idx.tolist()]
+    targets = np.linspace(0.0, total, num=keep_points)
+    result: list[tuple[int, int]] = []
+    j = 0
+    for t in targets:
+        while j < n - 1 and dists[j + 1] < t:
+            j += 1
+        result.append(points[j])
+    return result
+
+
+def _catmull_rom_segment(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    steps: int,
+) -> list[tuple[float, float]]:
+    """Interpolate one Catmull-Rom segment from p1 to p2 using steps sub-points."""
+    out: list[tuple[float, float]] = []
+    for k in range(steps):
+        t = float(k) / float(steps)
+        t2 = t * t
+        t3 = t2 * t
+        h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+        h10 = t3 - 2.0 * t2 + t
+        h01 = -2.0 * t3 + 3.0 * t2
+        h11 = t3 - t2
+        # Catmull-Rom tangents (alpha=0.5 centripetal).
+        m1y = 0.5 * (p2[0] - p0[0])
+        m1x = 0.5 * (p2[1] - p0[1])
+        m2y = 0.5 * (p3[0] - p1[0])
+        m2x = 0.5 * (p3[1] - p1[1])
+        y = h00 * p1[0] + h10 * m1y + h01 * p2[0] + h11 * m2y
+        x = h00 * p1[1] + h10 * m1x + h01 * p2[1] + h11 * m2x
+        out.append((y, x))
+    return out
 
 
 def _smooth_polyline(
@@ -472,24 +531,45 @@ def _smooth_polyline(
     passes: int = 2,
     blend: float = 0.58,
 ) -> list[tuple[float, float]]:
+    """Smooth a pixel-skeleton path using Laplacian pre-smoothing followed by
+    Catmull-Rom spline interpolation to eliminate staircase artifacts.
+    The resulting list has roughly (len(points) * steps_per_seg) points;
+    callers should re-sample afterwards if a fixed count is required.
+    `passes` and `blend` still control the initial Laplacian pre-smooth."""
     if len(points) <= 2:
         return [(float(y), float(x)) for y, x in points]
-    out = [(float(y), float(x)) for y, x in points]
+
+    # --- 1. Mild Laplacian pass to remove coarse pixel-grid noise ---
+    out: list[tuple[float, float]] = [(float(y), float(x)) for y, x in points]
     alpha = max(0.0, min(1.0, float(blend)))
-    for _ in range(max(0, int(passes))):
+    lap_passes = max(0, int(passes))
+    for _ in range(lap_passes):
         nxt = [out[0]]
         for i in range(1, len(out) - 1):
             py, px = out[i - 1]
             cy, cx = out[i]
             ny, nx = out[i + 1]
-            my = (py + ny) * 0.5
-            mx = (px + nx) * 0.5
-            sy = cy * (1.0 - alpha) + my * alpha
-            sx = cx * (1.0 - alpha) + mx * alpha
+            sy = cy * (1.0 - alpha) + (py + ny) * 0.5 * alpha
+            sx = cx * (1.0 - alpha) + (px + nx) * 0.5 * alpha
             nxt.append((sy, sx))
         nxt.append(out[-1])
         out = nxt
-    return out
+
+    # --- 2. Catmull-Rom spline through Laplacian-smoothed control points ---
+    # Fixed 3 sub-steps per segment gives smooth curves without over-densifying.
+    seg_steps = 3
+    spline: list[tuple[float, float]] = []
+    # Phantom endpoints mirror first/last segments for natural curve termination.
+    ctrl = [
+        (2.0 * out[0][0] - out[1][0], 2.0 * out[0][1] - out[1][1]),
+        *out,
+        (2.0 * out[-1][0] - out[-2][0], 2.0 * out[-1][1] - out[-2][1]),
+    ]
+    for i in range(1, len(ctrl) - 2):
+        seg = _catmull_rom_segment(ctrl[i - 1], ctrl[i], ctrl[i + 1], ctrl[i + 2], steps=seg_steps)
+        spline.extend(seg)
+    spline.append(out[-1])  # include the final endpoint
+    return spline
 
 
 def _path_to_sequence(
@@ -824,8 +904,28 @@ def _image_to_sequence_contours(
             else:
                 passes, blend, stroke_w = 2, 0.52, 0.74
         else:
-            passes, blend, stroke_w = 2, 0.52, 0.64
-        sampled = _smooth_polyline(sampled_i, passes=passes, blend=blend)
+            passes, blend, stroke_w = 3, 0.60, 0.64
+        spline_raw_c = _smooth_polyline(sampled_i, passes=passes, blend=blend)
+        # Arc-length re-sample on spline output.
+        sampled_fc: list[tuple[float, float]] = spline_raw_c
+        target_pts_c = keep
+        if len(sampled_fc) > target_pts_c:
+            dists_fc = [0.0]
+            for _si in range(1, len(sampled_fc)):
+                dy_fc = sampled_fc[_si][0] - sampled_fc[_si - 1][0]
+                dx_fc = sampled_fc[_si][1] - sampled_fc[_si - 1][1]
+                dists_fc.append(dists_fc[-1] + float((dy_fc * dy_fc + dx_fc * dx_fc) ** 0.5))
+            total_fc = dists_fc[-1]
+            if total_fc > 1e-9:
+                targets_fc = np.linspace(0.0, total_fc, num=target_pts_c)
+                resampled_fc: list[tuple[float, float]] = []
+                jj_c = 0
+                for _t_c in targets_fc:
+                    while jj_c < len(sampled_fc) - 1 and dists_fc[jj_c + 1] < _t_c:
+                        jj_c += 1
+                    resampled_fc.append(sampled_fc[jj_c])
+                sampled_fc = resampled_fc
+        sampled = sampled_fc
         part, cursor = _path_to_sequence_with_cursor(sampled, cursor, stroke_width=stroke_w)
         if part:
             seq.extend(part)
@@ -923,8 +1023,32 @@ def _image_to_sequence(
             else:
                 passes, blend, stroke_w = 3, 0.58, 0.76
         else:
-            passes, blend, stroke_w = 2, 0.60, 0.72
-        sampled = _smooth_polyline(sampled_i, passes=passes, blend=blend)
+            # For Latin / default characters: stronger smoothing to tame
+            # the noisy Zhang-Suen skeleton from EMNIST bitmaps.
+            passes, blend, stroke_w = 3, 0.65, 0.72
+        # After Catmull-Rom expansion, re-sample back to comp_keep points so
+        # the total budget is respected while keeping the smooth curve shape.
+        spline_raw = _smooth_polyline(sampled_i, passes=passes, blend=blend)
+        # Arc-length re-sample on float points (reuse the integer version logic).
+        sampled_f: list[tuple[float, float]] = spline_raw
+        target_pts = comp_keep
+        if len(sampled_f) > target_pts:
+            dists_f = [0.0]
+            for _si in range(1, len(sampled_f)):
+                dy_f = sampled_f[_si][0] - sampled_f[_si - 1][0]
+                dx_f = sampled_f[_si][1] - sampled_f[_si - 1][1]
+                dists_f.append(dists_f[-1] + float((dy_f * dy_f + dx_f * dx_f) ** 0.5))
+            total_f = dists_f[-1]
+            if total_f > 1e-9:
+                targets_f = np.linspace(0.0, total_f, num=target_pts)
+                resampled_f: list[tuple[float, float]] = []
+                jj = 0
+                for _t in targets_f:
+                    while jj < len(sampled_f) - 1 and dists_f[jj + 1] < _t:
+                        jj += 1
+                    resampled_f.append(sampled_f[jj])
+                sampled_f = resampled_f
+        sampled = sampled_f
         part, cursor = _path_to_sequence_with_cursor(sampled, cursor, stroke_width=stroke_w)
         if part:
             seq.extend(part)
@@ -1382,3 +1506,89 @@ def import_character_images_to_base_dataset(
         output_path=str(out),
         image_shape=[],
     )
+
+
+def import_emnist_to_base_dataset(
+    output_path: str,
+    *,
+    target_count: int = 40000,
+    split: str = "train",
+    seed: int = 42,
+    cache_dir: str = "storage/public_cache/emnist",
+    append: bool = True,
+    threshold: int = 200,
+    max_points: int = 120,
+    min_points: int = 8,
+) -> ImportStats:
+    from torchvision.datasets import EMNIST
+
+    is_train = True
+    if split == "test":
+        is_train = False
+
+    if split == "all":
+        train_ds = EMNIST(cache_dir, split="byclass", train=True, download=True)
+        test_ds = EMNIST(cache_dir, split="byclass", train=False, download=True)
+        images = np.concatenate([train_ds.data.numpy(), test_ds.data.numpy()], axis=0)
+        labels = np.concatenate([train_ds.targets.numpy(), test_ds.targets.numpy()], axis=0)
+    else:
+        ds = EMNIST(cache_dir, split="byclass", train=is_train, download=True)
+        images = ds.data.numpy()
+        labels = ds.targets.numpy()
+
+    indices = _sample_indices(images.shape[0], target_count, seed)
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if append else "w"
+
+    imported = 0
+    skipped = 0
+    with out.open(mode, encoding="utf-8") as w:
+        for idx in indices:
+            # EMNIST raw images are transposed by default; transpose to correct orientation
+            image = images[idx].T
+            label = int(labels[idx])
+            
+            if 0 <= label <= 9:
+                char = str(label)
+            elif 10 <= label <= 35:
+                char = chr(ord('A') + label - 10)
+            elif 36 <= label <= 61:
+                char = chr(ord('a') + label - 36)
+            else:
+                skipped += 1
+                continue
+
+            seq = _image_to_sequence(image, max_points=max_points, threshold=threshold)
+            if len(seq) < min_points:
+                skipped += 1
+                continue
+
+            sample = {
+                "char_id": char_to_model_id(char),
+                "style_id": 0,
+                "dataset_id": -900,
+                "user_id": 0,
+                "sequence": seq,
+                "meta": {
+                    "source": "emnist",
+                    "split": split,
+                    "source_index": int(idx),
+                    "label": label,
+                    "char": char,
+                },
+            }
+            w.write(json.dumps(sample, ensure_ascii=False) + "\n")
+            imported += 1
+
+    shape = list(images.shape[1:]) if images.ndim >= 2 else []
+    return ImportStats(
+        source="emnist",
+        requested_count=target_count,
+        imported_count=imported,
+        skipped_count=skipped,
+        output_path=str(out),
+        image_shape=shape,
+    )
+

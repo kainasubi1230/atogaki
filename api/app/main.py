@@ -905,13 +905,27 @@ def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") ->
     short_frag = sum(1 for s in strokes if len(s) <= 3)
     tiny_frag = sum(1 for s in strokes if _stroke_path_len(s) < 1.8)
     aspect = span_y / max(1.0, span_x)
-    target_aspect = 0.92 if _is_hiragana_char(ch) else 0.80 if _is_katakana_char(ch) else 1.0
+    if _is_hiragana_char(ch):
+        target_aspect = 0.92
+    elif _is_katakana_char(ch):
+        target_aspect = 0.80
+    elif _is_latin_char(ch):
+        if ch in {"m", "w", "M", "W"}:
+            target_aspect = 0.72
+        elif ch.isupper() or ch in {"b", "d", "f", "h", "k", "l", "t", "i", "j", "p", "q", "g", "y", "1"}:
+            target_aspect = 1.35
+        else:
+            target_aspect = 0.96
+    else:
+        target_aspect = 1.0
     aspect_penalty = abs(aspect - target_aspect) * 18.0
     source_bonus = 0.0
     if source == "hiragana-dataset-github":
         source_bonus = 18.0
     elif source == "k49":
         source_bonus = 8.0
+    elif source == "emnist":
+        source_bonus = 20.0
     elif source.startswith("katakana-generated-handlike"):
         source_bonus = 14.0
     elif source.startswith("kanjivg"):
@@ -1020,6 +1034,9 @@ def _select_runtime_char_sequence(ch: str, *, seed: str) -> list[list[float]] | 
         top_n = min(3, len(candidates))
     elif _is_kana_char(ch):
         top_n = min(10, len(candidates))
+    elif _is_latin_char(ch):
+        # Prefer only the top 2 highest-quality EMNIST characters to keep the handwriting neat
+        top_n = min(2, len(candidates))
     else:
         top_n = min(6, len(candidates))
     idx = _stable_int_seed(seed) % top_n
@@ -2338,10 +2355,10 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
                 style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
                 if _is_usable_trajectory(style_candidate, payload.text):
                     trajectory = style_candidate
-        if not trajectory:
-            base_candidate = generate_trajectory(payload.text, "{}", settings.base_model_path)
-            if _is_usable_trajectory(base_candidate, payload.text):
-                trajectory = base_candidate
+        # Skip base model fallback for Latin characters when there is no custom user style adapter,
+        # to avoid wiggly trajectories and shape recognition errors (e.g. e -> C, 3 -> c).
+        # We directly fall back to the clean, smoothed EMNIST dataset.
+        pass
         if trajectory and not settings.readable_text_svg:
             svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
         else:

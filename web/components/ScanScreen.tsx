@@ -204,7 +204,32 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
                 }}
               />
             </div>
-            <p style={{ marginTop: "0.5rem", fontSize: "0.8rem", opacity: 0.88 }}>
+            <div style={{ marginTop: "1rem" }}>
+              <button
+                type="button"
+                className="convert-btn"
+                style={{
+                  background: "transparent",
+                  color: "white",
+                  border: "1px solid rgba(255, 255, 255, 0.4)",
+                  borderRadius: "30px",
+                  padding: "10px 24px",
+                  fontSize: "0.95rem",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                }}
+                onClick={() => onComplete(null)}
+                onMouseOver={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "rgba(255, 255, 255, 0.1)";
+                }}
+                onMouseOut={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                }}
+              >
+                画像をアップロードせずにキャンバスへ進む
+              </button>
+            </div>
+            <p style={{ marginTop: "0.8rem", fontSize: "0.8rem", opacity: 0.88 }}>
               1枚にひらがな・カタカナを複数書いた画像は「一括ラベル」をONにしてアップロードしてください（左上から読み順で対応）。
             </p>
             {authStatus === "error" && authError ? (
