@@ -9,6 +9,7 @@ import { CanvasScreen } from "../components/CanvasScreen";
 
 const AUTH_CACHE_KEY = "machine_guest_auth_v1";
 const GUEST_IDENTITY_KEY = "machine_guest_identity_v1";
+const SESSION_STATE_KEY = "machine_tab_session_state_v1";
 const AUTH_CACHE_TTL_MS = 55 * 60 * 1000;
 
 type CachedAuth = {
@@ -20,6 +21,11 @@ type CachedAuth = {
 type GuestIdentity = {
   email: string;
   password: string;
+};
+
+type TabSessionState = {
+  screen?: ScreenState;
+  styleId?: number | null;
 };
 
 function randomGuestSuffix(): string {
@@ -36,6 +42,7 @@ export default function Page() {
   const [styleId, setStyleId] = useState<number | null>(null);
   const [authStatus, setAuthStatus] = useState<"loading" | "ready" | "error">("loading");
   const [authError, setAuthError] = useState("");
+  const [sessionReady, setSessionReady] = useState(false);
 
   const loadCachedAuth = (): CachedAuth | null => {
     try {
@@ -187,12 +194,45 @@ export default function Page() {
   useEffect(() => {
     initAuth();
 
+    let restoredScreen: ScreenState | null = null;
+    try {
+      const raw = sessionStorage.getItem(SESSION_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as TabSessionState;
+        const screenValue = parsed.screen;
+        if (screenValue === "scan" || screenValue === "canvas") {
+          restoredScreen = screenValue;
+        }
+        if (typeof parsed.styleId === "number") {
+          setStyleId(parsed.styleId);
+        }
+      }
+    } catch {
+      // ignore session restore errors
+    }
+    if (restoredScreen) {
+      setScreen(restoredScreen);
+      setSessionReady(true);
+      return;
+    }
+    setSessionReady(true);
+
     const timer = setTimeout(() => {
       setScreen((prev) => (prev === "splash" ? "scan" : prev));
     }, 400);
 
     return () => clearTimeout(timer);
   }, [initAuth]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    try {
+      const payload: TabSessionState = { screen, styleId };
+      sessionStorage.setItem(SESSION_STATE_KEY, JSON.stringify(payload));
+    } catch {
+      // Session persistence is best-effort; the app still works without it.
+    }
+  }, [screen, styleId, sessionReady]);
 
   useEffect(() => {
     if (authStatus !== "error") return;

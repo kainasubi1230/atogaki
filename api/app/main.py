@@ -1168,7 +1168,11 @@ def _generate_hiragana_runtime_trajectory(text: str) -> list[dict]:
             lx += float(row[0]) * 20.0
             ly += float(row[1]) * 20.0
             pen = "down" if float(row[2]) > 0.5 else "up"
-            width = max(1, min(4, int(round(float(row[3]) * 4.0))))
+            width_factor = float(row[3])
+            # Apply character-specific width adjustments to avoid overly thick lines.
+            if ch == "い":
+                width_factor = width_factor * 0.30
+            width = max(1, min(4, int(round(width_factor * 4.0))))
             local.append((lx, ly, pen, width))
         if len(local) < 8:
             return []
@@ -1540,11 +1544,11 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                         cell_offset_y += char_h * 0.13 + extra_drop
                         advance_w = min(advance_w, char_w * 0.64)
             if ch == "い":
-                cell_w = char_w * 0.76
-                cell_h = char_h * 0.74
-                cell_offset_x = char_w * 0.08
-                cell_offset_y = char_h * 0.13
-                advance_w = char_w * 0.72
+                cell_w = char_w * 0.90
+                cell_h = char_h * 0.88
+                cell_offset_x = char_w * 0.05
+                cell_offset_y = char_h * 0.06
+                advance_w = char_w * 0.85
             if _is_latin_char(ch):
                 if ch.isupper():
                     cell_w = char_w * 0.72
@@ -1786,7 +1790,7 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                 # Keep baseline thickness consistent, and add light tail taper for kana.
                 base_sw = 1.00
                 if ch == "い":
-                    base_sw = 0.82
+                    base_sw = 0.45
                 if _is_kana_char(ch):
                     seg_n = len(mapped_xy)
                     if seg_n >= 2:
@@ -1796,7 +1800,8 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                             t = float(idx2) / float(max(1, seg_n - 1))
                             tail = max(0.0, min(1.0, (t - 0.70) / 0.30))
                             # End of stroke becomes thinner to mimic hane/harai.
-                            seg_sw = max(0.56, base_sw * (1.0 - 0.46 * tail))
+                            min_sw = 0.40 if ch == "い" else 0.56
+                            seg_sw = max(min_sw, base_sw * (1.0 - 0.46 * tail))
                             stroke_paths.append((f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}", seg_sw))
                     else:
                         stroke_paths.append((" ".join(seg_parts), base_sw))

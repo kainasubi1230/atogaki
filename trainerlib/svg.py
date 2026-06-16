@@ -170,8 +170,8 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
     width = max(120.0, (max_x - min_x) + pad_x * 2)
     height = max(96.0, (max_y - min_y) + pad_y * 2 + 20)
 
-    strokes: list[list[tuple[float, float]]] = []
-    cur_stroke: list[tuple[float, float]] = []
+    strokes: list[list[tuple[float, float, int]]] = []
+    cur_stroke: list[tuple[float, float, int]] = []
     for p in trajectory:
         state = str(p.get("pen_state", "up"))
         if state != "down":
@@ -181,38 +181,47 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             continue
         x = float(p.get("x", 0.0)) - min_x + pad_x
         y = float(p.get("y", 0.0)) - min_y + pad_y
-        if not cur_stroke or cur_stroke[-1] != (x, y):
-            cur_stroke.append((x, y))
+        w = int(p.get("width", 1))
+        if not cur_stroke or cur_stroke[-1][:2] != (x, y):
+            cur_stroke.append((x, y, w))
     if cur_stroke:
         strokes.append(cur_stroke)
 
-    path_parts: list[str] = []
+    path_parts: list[tuple[str, float]] = []
     for stroke in strokes:
         if len(stroke) == 1:
             continue
         if len(stroke) == 2:
-            x0, y0 = stroke[0]
-            x1, y1 = stroke[1]
+            x0, y0, w0 = stroke[0]
+            x1, y1, w1 = stroke[1]
             if ((x1 - x0) ** 2 + (y1 - y0) ** 2) < 1.0:
                 continue
-            path_parts.append(f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}")
+            sw = max(0.50, min(1.10, (float(w0) + float(w1)) * 0.12 + 0.35))
+            path_parts.append((f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}", sw))
             continue
-        x0, y0 = stroke[0]
-        path_parts.append(f"M{x0:.2f},{y0:.2f}")
+        x0, y0, w0 = stroke[0]
+        path_data_parts = [f"M{x0:.2f},{y0:.2f}"]
         for idx in range(1, len(stroke) - 1):
-            cx, cy = stroke[idx]
-            nx, ny = stroke[idx + 1]
+            cx, cy, cw = stroke[idx]
+            nx, ny, nw = stroke[idx + 1]
             mx = (cx + nx) / 2.0
             my = (cy + ny) / 2.0
-            path_parts.append(f"Q{cx:.2f},{cy:.2f} {mx:.2f},{my:.2f}")
-        lx, ly = stroke[-1]
-        path_parts.append(f"L{lx:.2f},{ly:.2f}")
+            path_data_parts.append(f"Q{cx:.2f},{cy:.2f} {mx:.2f},{my:.2f}")
+        lx, ly, lw = stroke[-1]
+        path_data_parts.append(f"L{lx:.2f},{ly:.2f}")
+        path_data = " ".join(path_data_parts)
+        avg_width = sum(w for _, _, w in stroke) / max(1, len(stroke))
+        sw = max(0.50, min(1.10, avg_width * 0.12 + 0.35))
+        path_parts.append((path_data, sw))
 
-    path_data = " ".join(path_parts)
+    svg_paths = "".join(
+        f"<path d='{d}' stroke='black' fill='none' stroke-width='{sw:.2f}' vector-effect='non-scaling-stroke' stroke-linecap='round' stroke-linejoin='round'/>"
+        for (d, sw) in path_parts
+    )
     return (
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{int(round(width))}' height='{int(round(height))}' viewBox='0 0 {width:.2f} {height:.2f}'>"
         "<rect width='100%' height='100%' fill='white'/>"
-        f"<path d='{path_data}' stroke='black' fill='none' stroke-width='1.25' vector-effect='non-scaling-stroke' stroke-linecap='round' stroke-linejoin='round'/>"
+        f"{svg_paths}"
         f"<text x='12' y='{height - 14:.2f}' fill='#c62828' font-size='14'>{escape(watermark_text)}</text>"
         "</svg>"
     )

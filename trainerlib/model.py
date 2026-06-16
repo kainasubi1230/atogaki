@@ -1078,6 +1078,11 @@ def _trajectory_from_exemplar(
         # Keep enough points for shape while capping unstable tails.
         if _is_hiragana_char(char):
             seq = _resample_sequence_rows(seq, max_len=92)
+        
+        # Apply character-specific width adjustments to avoid overly thick lines.
+        char_width_scale = width_scale
+        if char == "い":
+            char_width_scale = width_scale * 0.65
         elif _is_katakana_char(char):
             seq = _resample_sequence_rows(seq, max_len=88)
         else:
@@ -1151,7 +1156,7 @@ def _trajectory_from_exemplar(
                 amp = min(0.16, max(0.0, (jitter_scale - 0.96) * 0.24))
                 tx += sin(phase) * amp
                 ty += cos(phase * 0.83) * amp * 0.7
-            new_width = max(1, min(4, int(round(width * width_scale))))
+            new_width = max(1, min(4, int(round(width * char_width_scale))))
             transformed.append((tx, ty, pen, new_width))
 
         # Ensure at least one pen-up near end to separate strokes.

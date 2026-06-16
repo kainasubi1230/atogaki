@@ -29,6 +29,18 @@ type ParsedHandwriting = {
   height: number;
 };
 
+type CanvasDraft = {
+  items: CanvasItem[];
+  textColor: string;
+  textSize: number;
+  paperStyle: string;
+  orientation: "portrait" | "landscape";
+  textLetterSpacing: number;
+  textLineHeight: number;
+};
+
+const CANVAS_DRAFT_KEY = "machine_canvas_draft_v1";
+
 const SMALL_KANA_CHARS = new Set(
   Array.from("ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"),
 );
@@ -81,6 +93,99 @@ function isAsciiRenderableText(text: string): boolean {
     const code = ch.charCodeAt(0);
     return code >= 0x20 && code <= 0x7e;
   });
+}
+
+function defaultCanvasItems(): CanvasItem[] {
+  return [
+    {
+      id: "1",
+      type: "text",
+      x: 40,
+      y: 40,
+      text: "",
+      svg: "",
+      color: COLORS[0].color,
+      isConverted: false,
+      fontSize: 24,
+      letterSpacing: 0,
+      lineHeight: 1.5,
+    },
+  ];
+}
+
+function isCanvasItemLike(item: unknown): item is CanvasItem {
+  if (!item || typeof item !== "object") return false;
+  const it = item as Partial<CanvasItem>;
+  return (
+    typeof it.id === "string" &&
+    typeof it.type === "string" &&
+    typeof it.x === "number" &&
+    typeof it.y === "number" &&
+    typeof it.text === "string" &&
+    typeof it.color === "string" &&
+    typeof it.isConverted === "boolean"
+  );
+}
+
+function loadCanvasDraft(): CanvasDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(CANVAS_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CanvasDraft>;
+    const items = Array.isArray(parsed.items) ? parsed.items.filter(isCanvasItemLike) : [];
+    if (items.length === 0) return null;
+    return {
+      items,
+      textColor: typeof parsed.textColor === "string" ? parsed.textColor : COLORS[0].color,
+      textSize: typeof parsed.textSize === "number" ? parsed.textSize : 24,
+      paperStyle: typeof parsed.paperStyle === "string" ? parsed.paperStyle : PAPERS[0].id,
+      orientation: parsed.orientation === "landscape" ? "landscape" : "portrait",
+      textLetterSpacing: typeof parsed.textLetterSpacing === "number" ? parsed.textLetterSpacing : 0,
+      textLineHeight: typeof parsed.textLineHeight === "number" ? parsed.textLineHeight : 1.5,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function lightweightCanvasItems(items: CanvasItem[]): CanvasItem[] {
+  return items.map((item) => {
+    if (item.type !== "handwriting") {
+      return { ...item, svg: item.svg ?? "", paths: item.paths?.slice(0, 200) };
+    }
+    return {
+      id: `${item.id}_restored_text`,
+      type: "text",
+      x: item.x,
+      y: item.y,
+      text: item.text,
+      svg: "",
+      color: item.color,
+      isConverted: false,
+      fontSize: item.fontSize ?? Math.max(18, Math.round((item.boxHeight ?? 36) / 1.55)),
+      letterSpacing: item.letterSpacing ?? 0,
+      lineHeight: item.lineHeight ?? 1.5,
+      boxWidth: item.boxWidth,
+      boxHeight: item.boxHeight,
+      rotate: item.rotate,
+    } satisfies CanvasItem;
+  });
+}
+
+function saveCanvasDraft(draft: CanvasDraft): void {
+  try {
+    sessionStorage.setItem(CANVAS_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    try {
+      sessionStorage.setItem(
+        CANVAS_DRAFT_KEY,
+        JSON.stringify({ ...draft, items: lightweightCanvasItems(draft.items) }),
+      );
+    } catch {
+      // best effort
+    }
+  }
 }
 
 function isGeneratedPunctuationItem(item: CanvasItem): boolean {
@@ -411,105 +516,75 @@ function pathBoundsFromD(d: string): { minX: number; minY: number; maxX: number;
   return { minX, minY, maxX, maxY };
 }
 
+function extractPathRowsFromSvg(svg: string): Array<{ d: string; strokeWidth: number }> {
+  const rows: Array<{ d: string; strokeWidth: number }> = [];
+  const pathRe = /<path\b[^>]*\bd=['"]([^'"]+)['"][^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pathRe.exec(svg)) !== null) {
+    const full = match[0] ?? "";
+    const d = match[1] ?? "";
+    if (!d.trim()) continue;
+    const swMatch = full.match(/\bstroke-width=['"]([^'"]+)['"]/i);
+    const strokeWidth = swMatch ? Number(swMatch[1]) : 1;
+    rows.push({ d, strokeWidth: Number.isFinite(strokeWidth) ? strokeWidth : 1 });
+  }
+  return rows;
+}
+
+function parsedPathsFromRows(rows: Array<{ d: string; strokeWidth: number }>, idPrefix: string): ParsedHandwriting | null {
+  if (rows.length === 0) return null;
+  const paths: HandwritingPath[] = [];
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  rows.forEach((row, idx) => {
+    paths.push({
+      id: `${idPrefix}_${idx}_${Math.random().toString(36).slice(2, 8)}`,
+      d: row.d,
+      strokeWidth: row.strokeWidth,
+    });
+    const b = pathBoundsFromD(row.d);
+    if (b) {
+      minX = Math.min(minX, b.minX);
+      minY = Math.min(minY, b.minY);
+      maxX = Math.max(maxX, b.maxX);
+      maxY = Math.max(maxY, b.maxY);
+    }
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    minX = 0;
+    minY = 0;
+    maxX = 100;
+    maxY = 100;
+  }
+  const pad = 2;
+  const vbX = minX - pad;
+  const vbY = minY - pad;
+  const vbW = Math.max(8, maxX - minX + pad * 2);
+  const vbH = Math.max(8, maxY - minY + pad * 2);
+  return {
+    paths,
+    viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`,
+    width: vbW,
+    height: vbH,
+  };
+}
+
 function parseHandwritingSvg(svg: string): ParsedHandwriting | null {
+  const regexParsed = parsedPathsFromRows(extractPathRowsFromSvg(svg), "pr");
+  if (regexParsed) return regexParsed;
+
   try {
     const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
     const root = doc.documentElement;
-    let pathEls = Array.from(root.querySelectorAll("path"));
-    if (pathEls.length === 0) {
-      const fallbackEls: Array<{ d: string; strokeWidth: number }> = [];
-      const pathRe = /<path\b[^>]*\bd=['"]([^'"]+)['"][^>]*>/gi;
-      let m: RegExpExecArray | null;
-      while ((m = pathRe.exec(svg)) !== null) {
-        const full = m[0] ?? "";
-        const d = m[1] ?? "";
-        const swMatch = full.match(/\bstroke-width=['"]([^'"]+)['"]/i);
-        const sw = swMatch ? Number(swMatch[1]) : 1;
-        if (d.trim()) {
-          fallbackEls.push({ d, strokeWidth: Number.isFinite(sw) ? sw : 1 });
-        }
-      }
-      if (fallbackEls.length === 0) return null;
-
-      const paths: HandwritingPath[] = [];
-      let minX = Number.POSITIVE_INFINITY;
-      let minY = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY;
-      let maxY = Number.NEGATIVE_INFINITY;
-      fallbackEls.forEach((it, idx) => {
-        paths.push({
-          id: `pf_${idx}_${Math.random().toString(36).slice(2, 8)}`,
-          d: it.d,
-          strokeWidth: it.strokeWidth,
-        });
-        const b = pathBoundsFromD(it.d);
-        if (b) {
-          minX = Math.min(minX, b.minX);
-          minY = Math.min(minY, b.minY);
-          maxX = Math.max(maxX, b.maxX);
-          maxY = Math.max(maxY, b.maxY);
-        }
-      });
-      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
-        minX = 0;
-        minY = 0;
-        maxX = 100;
-        maxY = 100;
-      }
-      const pad = 2;
-      const vbX = minX - pad;
-      const vbY = minY - pad;
-      const vbW = Math.max(8, maxX - minX + pad * 2);
-      const vbH = Math.max(8, maxY - minY + pad * 2);
-      return {
-        paths,
-        viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`,
-        width: vbW,
-        height: vbH,
-      };
-    }
-
-    const paths: HandwritingPath[] = [];
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-
-    pathEls.forEach((el, idx) => {
+    const pathEls = Array.from(root.querySelectorAll("path"));
+    return parsedPathsFromRows(pathEls.map((el) => {
       const d = el.getAttribute("d") ?? "";
-      if (!d.trim()) return;
       const strokeW = Number(el.getAttribute("stroke-width") ?? "1");
-      paths.push({
-        id: `p_${idx}_${Math.random().toString(36).slice(2, 8)}`,
-        d,
-        strokeWidth: Number.isFinite(strokeW) ? strokeW : 1,
-      });
-      const b = pathBoundsFromD(d);
-      if (b) {
-        minX = Math.min(minX, b.minX);
-        minY = Math.min(minY, b.minY);
-        maxX = Math.max(maxX, b.maxX);
-        maxY = Math.max(maxY, b.maxY);
-      }
-    });
-    if (paths.length === 0) return null;
-    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
-      minX = 0;
-      minY = 0;
-      maxX = 100;
-      maxY = 100;
-    }
-    const pad = 2;
-    const vbX = minX - pad;
-    const vbY = minY - pad;
-    const vbW = Math.max(8, maxX - minX + pad * 2);
-    const vbH = Math.max(8, maxY - minY + pad * 2);
-    return {
-      paths,
-      viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`,
-      width: vbW,
-      height: vbH,
-    };
+      return { d, strokeWidth: Number.isFinite(strokeW) ? strokeW : 1 };
+    }).filter((row) => row.d.trim()), "pd");
   } catch {
     return null;
   }
@@ -547,6 +622,7 @@ const getItemSize = (item: CanvasItem) => {
 };
 
 export function CanvasScreen({ token, userId, styleId }: Props) {
+  const initialDraft = loadCanvasDraft();
   const [isProcessing, setIsProcessing] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"paper" | "write">("paper");
@@ -555,30 +631,16 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   const [coverage, setCoverage] = useState<StyleCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
 
-  const [textColor, setTextColor] = useState(COLORS[0].color);
-  const [textSize, setTextSize] = useState(24);
-  const [paperStyle, setPaperStyle] = useState(PAPERS[0].id);
+  const [textColor, setTextColor] = useState(initialDraft?.textColor ?? COLORS[0].color);
+  const [textSize, setTextSize] = useState(initialDraft?.textSize ?? 24);
+  const [paperStyle, setPaperStyle] = useState(initialDraft?.paperStyle ?? PAPERS[0].id);
   const [orientation, setOrientation] = useState<"portrait" | "landscape">(
-    "portrait",
+    initialDraft?.orientation ?? "portrait",
   );
 
   const [historyState, setHistoryState] = useState({
     past: [] as CanvasItem[][],
-    present: [
-      {
-        id: "1",
-        type: "text",
-        x: 40,
-        y: 40,
-        text: "",
-        svg: "",
-        color: COLORS[0].color,
-        isConverted: false,
-        fontSize: 24,
-        letterSpacing: 0,
-        lineHeight: 1.5,
-      },
-    ] as CanvasItem[],
+    present: (initialDraft?.items ?? defaultCanvasItems()) as CanvasItem[],
     future: [] as CanvasItem[][],
   });
 
@@ -674,8 +736,20 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
     "pointer",
   );
 
-  const [textLetterSpacing, setTextLetterSpacing] = useState(0);
-  const [textLineHeight, setTextLineHeight] = useState(1.5);
+  const [textLetterSpacing, setTextLetterSpacing] = useState(initialDraft?.textLetterSpacing ?? 0);
+  const [textLineHeight, setTextLineHeight] = useState(initialDraft?.textLineHeight ?? 1.5);
+
+  useEffect(() => {
+    saveCanvasDraft({
+      items,
+      textColor,
+      textSize,
+      paperStyle,
+      orientation,
+      textLetterSpacing,
+      textLineHeight,
+    });
+  }, [items, textColor, textSize, paperStyle, orientation, textLetterSpacing, textLineHeight]);
 
   useEffect(() => {
     const handleGlobalMove = (e: PointerEvent) => {
@@ -2106,7 +2180,6 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                             fill="none"
                             stroke={item.color}
                             strokeWidth={p.strokeWidth}
-                            vectorEffect="non-scaling-stroke"
                             strokeLinecap="round"
                             strokeLinejoin="round"
                           />

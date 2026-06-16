@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API_BASE } from "../lib/api";
 
 type Props = {
@@ -22,7 +22,24 @@ type UploadScanBody = {
   labeled_segment_count?: number | null;
 };
 
+type SavedScanImage = {
+  name: string;
+  type: string;
+  size: number;
+  lastModified: number;
+  dataUrl: string;
+};
+
+type ScanDraft = {
+  sampleLabel: string;
+  useBatchLabels: boolean;
+  batchLabels: string;
+  image: SavedScanImage | null;
+  lastStyleId: number | null;
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const SCAN_DRAFT_KEY = "machine_scan_draft_v1";
 const SUCCESS_STATUSES = new Set(["completed", "finished", "succeeded", "ready"]);
 const FAILURE_STATUSES = new Set(["failed", "error", "cancelled", "canceled"]);
 const HIRAGANA_BASIC = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん";
@@ -34,13 +51,88 @@ function compactChars(text: string): string {
     .join("");
 }
 
+function loadScanDraft(): ScanDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(SCAN_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ScanDraft;
+    return {
+      sampleLabel: typeof parsed.sampleLabel === "string" ? parsed.sampleLabel : "あ",
+      useBatchLabels: typeof parsed.useBatchLabels === "boolean" ? parsed.useBatchLabels : true,
+      batchLabels: typeof parsed.batchLabels === "string" ? parsed.batchLabels : `${HIRAGANA_BASIC}${KATAKANA_BASIC}`,
+      image:
+        parsed.image &&
+        typeof parsed.image.name === "string" &&
+        typeof parsed.image.type === "string" &&
+        typeof parsed.image.dataUrl === "string"
+          ? parsed.image
+          : null,
+      lastStyleId: typeof parsed.lastStyleId === "number" ? parsed.lastStyleId : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveScanDraft(draft: ScanDraft): void {
+  try {
+    sessionStorage.setItem(SCAN_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // Large camera images can exceed sessionStorage. Keep labels at least.
+    const fallback = { ...draft, image: null };
+    try {
+      sessionStorage.setItem(SCAN_DRAFT_KEY, JSON.stringify(fallback));
+    } catch {
+      // best effort
+    }
+  }
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("file_read_failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function dataUrlToFile(saved: SavedScanImage): File {
+  const [header, payload = ""] = saved.dataUrl.split(",", 2);
+  const mimeMatch = header.match(/^data:([^;]+);base64$/);
+  const mime = mimeMatch?.[1] || saved.type || "application/octet-stream";
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], saved.name, {
+    type: mime,
+    lastModified: saved.lastModified || Date.now(),
+  });
+}
+
 export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, onComplete }: Props) {
+  const initialDraft = loadScanDraft();
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState("");
-  const [sampleLabel, setSampleLabel] = useState("あ");
-  const [useBatchLabels, setUseBatchLabels] = useState(true);
-  const [batchLabels, setBatchLabels] = useState(`${HIRAGANA_BASIC}${KATAKANA_BASIC}`);
+  const [sampleLabel, setSampleLabel] = useState(initialDraft?.sampleLabel ?? "あ");
+  const [useBatchLabels, setUseBatchLabels] = useState(initialDraft?.useBatchLabels ?? true);
+  const [batchLabels, setBatchLabels] = useState(initialDraft?.batchLabels ?? `${HIRAGANA_BASIC}${KATAKANA_BASIC}`);
+  const [savedImage, setSavedImage] = useState<SavedScanImage | null>(initialDraft?.image ?? null);
+  const [lastStyleId, setLastStyleId] = useState<number | null>(initialDraft?.lastStyleId ?? null);
   const isAuthReady = Boolean(token && userId && authStatus === "ready");
+
+  useEffect(() => {
+    saveScanDraft({
+      sampleLabel,
+      useBatchLabels,
+      batchLabels,
+      image: savedImage,
+      lastStyleId,
+    });
+  }, [sampleLabel, useBatchLabels, batchLabels, savedImage, lastStyleId]);
 
   async function waitForJob(tokenValue: string, jobId: string, label: string) {
     let lastStatus = "unknown";
@@ -66,7 +158,7 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
     throw new Error(`${label}_job_timeout:${lastStatus}`);
   }
 
-  async function handleFileUpload(file: File) {
+  async function handleFileUpload(file: File, options?: { rememberImage?: boolean }) {
     setIsProcessing(true);
     setProcessStatus("画像を読み込んでいます...");
 
@@ -74,6 +166,21 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
       if (!isAuthReady || !token || !userId) {
         alert("初期化中です。数秒待ってから再試行してください。");
         return;
+      }
+
+      if (options?.rememberImage !== false) {
+        try {
+          const dataUrl = await fileToDataUrl(file);
+          setSavedImage({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            lastModified: file.lastModified,
+            dataUrl,
+          });
+        } catch (e) {
+          console.warn("Failed to persist selected scan image", e);
+        }
       }
 
       const formData = new FormData();
@@ -152,6 +259,7 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
         await waitForJob(token, trainBody.job_id, "train_lora");
       }
 
+      setLastStyleId(trainBody.style_id);
       onComplete(trainBody.style_id);
     } catch (e) {
       console.error(e);
@@ -171,6 +279,11 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
     } finally {
       setIsProcessing(false);
     }
+  }
+
+  async function handleResumeSavedImage() {
+    if (!savedImage) return;
+    await handleFileUpload(dataUrlToFile(savedImage), { rememberImage: false });
   }
 
   const statusLabel =
@@ -204,6 +317,31 @@ export function ScanScreen({ token, userId, authStatus, authError, onRetryAuth, 
                 }}
               />
             </div>
+            {lastStyleId ? (
+              <button
+                className="convert-btn"
+                onClick={() => onComplete(lastStyleId)}
+                disabled={!isAuthReady}
+                style={{ marginTop: "0.8rem" }}
+              >
+                前回のスタイルで続きから書く
+              </button>
+            ) : null}
+            {savedImage ? (
+              <button
+                className="convert-btn"
+                onClick={handleResumeSavedImage}
+                disabled={!isAuthReady}
+                style={{ marginTop: "0.55rem" }}
+              >
+                保存済み画像でスタイル準備を再開
+              </button>
+            ) : null}
+            {savedImage ? (
+              <p style={{ marginTop: "0.35rem", fontSize: "0.74rem", opacity: 0.82 }}>
+                保存中: {savedImage.name}（タブを閉じるまで保持）
+              </p>
+            ) : null}
             <p style={{ marginTop: "0.5rem", fontSize: "0.8rem", opacity: 0.88 }}>
               1枚にひらがな・カタカナを複数書いた画像は「一括ラベル」をONにしてアップロードしてください（左上から読み順で対応）。
             </p>
