@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { CanvasItem, HandwritingPath } from "../lib/types";
 import { COLORS, PAPERS } from "../lib/constants";
 import { getJSON, postJSON } from "../lib/api";
@@ -648,7 +648,15 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const [selectedId, setSelectedId] = useState<string | null>("1");
+  const [selectedIds, setSelectedIds] = useState<string[]>(["1"]);
+  const selectedId = selectedIds[selectedIds.length - 1] || null;
+  const setSelectedId = (id: string | null) => {
+    setSelectedIds(id ? [id] : []);
+  };
+
+  const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
+  const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  const paperRef = useRef<HTMLDivElement>(null);
 
   // Drag and rotation logic states
   const [isDragging, setIsDragging] = useState<string | null>(null);
@@ -684,7 +692,11 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
         const dy = e.clientY - dragStart.y;
         setItems((prev) =>
           prev.map((it) =>
-            it.id === isDragging ? { ...it, x: it.x + dx, y: it.y + dy } : it,
+            selectedIds.includes(it.id)
+              ? { ...it, x: it.x + dx, y: it.y + dy }
+              : it.id === isDragging
+              ? { ...it, x: it.x + dx, y: it.y + dy }
+              : it,
           ),
         );
         setDragStart({ x: e.clientX, y: e.clientY });
@@ -835,7 +847,17 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handlePointerDown = (e: React.PointerEvent, id: string) => {
     setIsDragging(id);
-    setSelectedId(id);
+    if (!selectedIds.includes(id)) {
+      if (e.shiftKey) {
+        setSelectedIds((prev) => [...prev, id]);
+      } else {
+        setSelectedIds([id]);
+      }
+    } else {
+      if (e.shiftKey) {
+        setSelectedIds((prev) => prev.filter((x) => x !== id));
+      }
+    }
     setDragStart({ x: e.clientX, y: e.clientY });
     e.preventDefault(); // prevent text selection while dragging
   };
@@ -891,6 +913,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   };
 
   const handlePaperClick = (e: React.PointerEvent) => {
+    console.log("handlePaperClick target match:", e.target === e.currentTarget, "target:", e.target, "currentTarget:", e.currentTarget, "tool:", activeTool);
     if (e.target === e.currentTarget) {
       const canCreate =
         activeTool === "text" ||
@@ -922,14 +945,77 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
         setActiveTool("pointer");
       } else {
-        setSelectedId(null);
+        setSelectedIds([]);
+        if (activeTool === "pointer") {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const startX = e.clientX - rect.left;
+          const startY = e.clientY - rect.top;
+          setMarqueeStart({ x: startX, y: startY });
+          setMarqueeEnd({ x: startX, y: startY });
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
       }
+    }
+  };
+
+  const handlePaperPointerMove = (e: React.PointerEvent) => {
+    console.log("handlePaperPointerMove, marqueeStart:", marqueeStart);
+    if (marqueeStart) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const currentX = e.clientX - rect.left;
+      const currentY = e.clientY - rect.top;
+      console.log("handlePaperPointerMove updating end to:", currentX, currentY);
+      setMarqueeEnd({ x: currentX, y: currentY });
+    }
+  };
+
+  const handlePaperPointerUp = (e: React.PointerEvent) => {
+    console.log("handlePaperPointerUp, marqueeStart:", marqueeStart, "marqueeEnd:", marqueeEnd);
+    if (marqueeStart && marqueeEnd) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      
+      const x1 = Math.min(marqueeStart.x, marqueeEnd.x);
+      const y1 = Math.min(marqueeStart.y, marqueeEnd.y);
+      const x2 = Math.max(marqueeStart.x, marqueeEnd.x);
+      const y2 = Math.max(marqueeStart.y, marqueeEnd.y);
+      
+      if (x2 - x1 > 5 || y2 - y1 > 5) {
+        const newlySelected: string[] = [];
+        
+        items.forEach((item) => {
+          const size = getItemSize(item);
+          const itemX = item.x;
+          const itemY = item.y;
+          const itemW = size.width;
+          const itemH = size.height;
+          
+          // Check if item bounding box overlaps with marquee box (intersection)
+          const intersects = !(
+            itemX + itemW < x1 ||
+            itemX > x2 ||
+            itemY + itemH < y1 ||
+            itemY > y2
+          );
+          
+          if (intersects) {
+            newlySelected.push(item.id);
+          }
+        });
+        
+        console.log("handlePaperPointerUp selecting:", newlySelected);
+        setSelectedIds(newlySelected);
+      } else {
+        setSelectedIds([]);
+      }
+      
+      setMarqueeStart(null);
+      setMarqueeEnd(null);
     }
   };
 
   const deleteItem = (id: string) => {
     setItems((prev) => prev.filter((it) => it.id !== id));
-    if (selectedId === id) setSelectedId(null);
+    setSelectedIds((prev) => prev.filter((x) => x !== id));
     commitHistory();
   };
 
@@ -939,10 +1025,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   const currentRotation = selectedItem ? (selectedItem.rotate ?? 0) : 0;
 
   const handleRotationChange = (angle: number) => {
-    if (selectedId) {
+    if (selectedIds.length > 0) {
       setItems((prev) =>
         prev.map((it) =>
-          it.id === selectedId ? { ...it, rotate: angle } : it,
+          selectedIds.includes(it.id) ? { ...it, rotate: angle } : it,
         ),
       );
     }
@@ -982,10 +1068,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   const handleColorChange = (newColor: string) => {
     setTextColor(newColor);
     localStorage.setItem("machine_selected_color_v1", newColor);
-    if (selectedId) {
-      setItems(
-        items.map((it) =>
-          it.id === selectedId ? { ...it, color: newColor } : it,
+    if (selectedIds.length > 0) {
+      setItems((prev) =>
+        prev.map((it) =>
+          selectedIds.includes(it.id) ? { ...it, color: newColor } : it,
         ),
       );
     }
@@ -993,10 +1079,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handleFontSizeChange = (newSize: number) => {
     setTextSize(newSize);
-    if (selectedId) {
-      setItems(
-        items.map((it) =>
-          it.id === selectedId && it.type === "text"
+    if (selectedIds.length > 0) {
+      setItems((prev) =>
+        prev.map((it) =>
+          selectedIds.includes(it.id) && it.type === "text"
             ? { ...it, fontSize: newSize }
             : it,
         ),
@@ -1006,10 +1092,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handleLetterSpacingChange = (newVal: number) => {
     setTextLetterSpacing(newVal);
-    if (selectedId) {
-      setItems(
-        items.map((it) =>
-          it.id === selectedId && it.type === "text"
+    if (selectedIds.length > 0) {
+      setItems((prev) =>
+        prev.map((it) =>
+          selectedIds.includes(it.id) && it.type === "text"
             ? { ...it, letterSpacing: newVal }
             : it,
         ),
@@ -1019,10 +1105,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handleLineHeightChange = (newVal: number) => {
     setTextLineHeight(newVal);
-    if (selectedId) {
-      setItems(
-        items.map((it) =>
-          it.id === selectedId && it.type === "text"
+    if (selectedIds.length > 0) {
+      setItems((prev) =>
+        prev.map((it) =>
+          selectedIds.includes(it.id) && it.type === "text"
             ? { ...it, lineHeight: newVal }
             : it,
         ),
@@ -1945,26 +2031,43 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
         )}
 
         <div
+          ref={paperRef}
           className={`paper style-${paperStyle} orientation-${orientation} ${selectedPaperDef.image ? "has-custom-image" : ""}`}
           style={{
             cursor: activeTool !== "pointer" ? "crosshair" : "default",
             ...customImageStyle,
           }}
           onPointerDown={handlePaperClick}
+          onPointerMove={handlePaperPointerMove}
+          onPointerUp={handlePaperPointerUp}
         >
           {items.map((rawItem) => {
             const item = punctuationRenderItem(rawItem);
+            const isSelected = selectedIds.includes(item.id);
             return (
              <div
                key={item.id}
                id={`wrapper-${item.id}`}
-               className={`draggable-wrapper ${selectedId === item.id ? "selected" : ""}`}
+               className={`draggable-wrapper ${isSelected ? "selected" : ""}`}
                style={{
                  top: item.y,
                  left: item.x,
                  transform: item.rotate ? `rotate(${item.rotate}deg)` : undefined
                }}
-               onPointerDown={() => setSelectedId(item.id)}
+               onPointerDown={(e) => {
+                 e.stopPropagation();
+                 if (e.shiftKey) {
+                   setSelectedIds((prev) =>
+                     prev.includes(item.id)
+                       ? prev.filter((x) => x !== item.id)
+                       : [...prev, item.id]
+                   );
+                 } else {
+                   if (!selectedIds.includes(item.id)) {
+                     setSelectedIds([item.id]);
+                   }
+                 }
+               }}
              >
               <div className="drag-header">
                 <div
@@ -2128,28 +2231,30 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               </div>
 
               {/* Rotate Handle */}
-              <div
-                className="rotate-handle"
-                onPointerDown={(e) => handleRotateStart(e, item.id)}
-                title="ドラッグして回転"
-              >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              {selectedIds.length <= 1 && (
+                <div
+                  className="rotate-handle"
+                  onPointerDown={(e) => handleRotateStart(e, item.id)}
+                  title="ドラッグして回転"
                 >
-                  <polyline points="23 4 23 10 17 10"></polyline>
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-                </svg>
-              </div>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                  </svg>
+                </div>
+              )}
 
               {/* Resize Handles */}
-              {selectedId === item.id && (
+              {selectedId === item.id && selectedIds.length <= 1 && (
                 <>
                   <div
                     className="resize-handle resize-top"
@@ -2171,6 +2276,18 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               )}
             </div>
           );})}
+          
+          {marqueeStart && marqueeEnd && (
+            <div
+              className="selection-marquee"
+              style={{
+                left: `${Math.min(marqueeStart.x, marqueeEnd.x)}px`,
+                top: `${Math.min(marqueeStart.y, marqueeEnd.y)}px`,
+                width: `${Math.abs(marqueeStart.x - marqueeEnd.x)}px`,
+                height: `${Math.abs(marqueeStart.y - marqueeEnd.y)}px`,
+              }}
+            />
+          )}
         </div>
 
         <div

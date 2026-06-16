@@ -1149,4 +1149,21 @@ body {
   cursor: ew-resize;
 }
 
+/* Selection Marquee Box */
+.selection-marquee {
+  position: absolute;
+  border: 1.5px dashed rgba(66, 153, 225, 0.85);
+  background-color: rgba(66, 153, 225, 0.08);
+  pointer-events: none;
+  z-index: 999;
+}
+
+/* Multi-selected items border */
+.draggable-wrapper.selected {
+  outline: 1.5px solid rgba(66, 153, 225, 0.7);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+
 
