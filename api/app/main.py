@@ -319,7 +319,7 @@ def _is_path_artifact(points: list[dict], text: str) -> bool:
     # Guard for almost-horizontal "just a line" outputs.
     if height < 6 and width > 24:
         return True
-    y_bins = {int(round(y / 3.0)) for y in ys}
+    y_bins = {round(y / 3.0) for y in ys}
     if len(y_bins) <= 2 and width > 36:
         return True
     # Detect rapid left-right / up-down jitter (zigzag artifacts).
@@ -397,7 +397,7 @@ def _is_degenerate_trajectory(points: list[dict], text: str) -> bool:
         return True
 
     # Line-like outputs often have little vertical diversity.
-    y_bins = {int(round(y / 4.0)) for y in ys}
+    y_bins = {round(y / 4.0) for y in ys}
     if len(y_bins) <= 3 and width > max(36, len(text) * 12):
         return True
     return False
@@ -439,7 +439,7 @@ def _trajectory_candidate_score(points: list[dict], text: str) -> float:
     tiny_strokes = sum(1 for s in strokes if len(s) <= 2)
     short_strokes = sum(1 for s in strokes if len(s) <= 3)
     stroke_count = len(strokes)
-    y_bins = len({int(round(y / 2.0)) for y in ys})
+    y_bins = len({round(y / 2.0) for y in ys})
 
     aspect = height / max(1.0, width)
     expected_aspect = 0.9 if _is_hiragana_text(text) else 0.7
@@ -551,7 +551,7 @@ def _strokes_to_bitmap(
         for i in range(1, len(mapped)):
             x0, y0, w0 = mapped[i - 1]
             x1, y1, w1 = mapped[i]
-            width = max(1, min(3, int(round((w0 + w1) * 0.5))))
+            width = max(1, min(3, round((w0 + w1) * 0.5)))
             draw.line((x0, y0, x1, y1), fill=255, width=width)
     data = list(img.getdata())
     return [1 if v >= 32 else 0 for v in data]
@@ -629,6 +629,23 @@ def _apply_runtime_variation(
         shear *= 0.28 + kanji_complexity * 0.28
         shift_x *= 0.45 + kanji_complexity * 0.30
         shift_y *= 0.45 + kanji_complexity * 0.30
+    if _is_latin_char(ch):
+        if ch.isupper():
+            # Uppercase: extremely stable and clean
+            rot_deg = float(rng.uniform(-0.5, 0.5))
+            scale_x = float(1.0 + rng.uniform(-0.012, 0.012))
+            scale_y = float(1.0 + rng.uniform(-0.012, 0.012))
+            shear = float(rng.uniform(-0.005, 0.005))
+            shift_x = float(rng.uniform(-0.15, 0.15))
+            shift_y = float(rng.uniform(-0.15, 0.15))
+        else:
+            # Lowercase / Digits: allow moderate organic tilt and variation
+            rot_deg = float(rng.uniform(-2.2, 2.2))
+            scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
+            scale_y = float(1.0 + rng.uniform(-0.028, 0.028))
+            shear = float(rng.uniform(-0.018, 0.018))
+            shift_x = float(rng.uniform(-0.42, 0.42))
+            shift_y = float(rng.uniform(-0.40, 0.40))
 
     rot = math.radians(rot_deg)
     cr = math.cos(rot)
@@ -644,6 +661,11 @@ def _apply_runtime_variation(
             amp *= 0.42 + kanji_complexity * 0.52
         if _is_kana_char(ch):
             amp = float(rng.uniform(0.038, 0.112))
+        if _is_latin_char(ch):
+            if ch.isupper():
+                amp = float(rng.uniform(0.008, 0.024))  # very subtle bend for uppercase
+            else:
+                amp = float(rng.uniform(0.016, 0.048))  # natural handwritten bend for lowercase
         if ch in _HIRAGANA_NA_ROW:
             amp *= 0.80
         s_tx = float(rng.uniform(-0.18, 0.18))
@@ -655,6 +677,13 @@ def _apply_runtime_variation(
         if _is_kana_char(ch):
             s_tx = float(rng.uniform(-0.22, 0.22))
             s_ty = float(rng.uniform(-0.20, 0.20))
+        if _is_latin_char(ch):
+            if ch.isupper():
+                s_tx = float(rng.uniform(-0.04, 0.04))
+                s_ty = float(rng.uniform(-0.04, 0.04))
+            else:
+                s_tx = float(rng.uniform(-0.08, 0.08))
+                s_ty = float(rng.uniform(-0.08, 0.08))
         if ch in _HIRAGANA_NA_ROW:
             s_tx = float(rng.uniform(-0.09, 0.09))
             s_ty = float(rng.uniform(-0.09, 0.09))
@@ -703,9 +732,11 @@ def _apply_runtime_variation(
 
             # Slight endpoint anchor keeps shapes readable.
             t2 = float(i) / float(max(1, n - 1))
-            endpoint_pull = max(0.0, 0.24 - abs(t2 - 0.5)) * (
-                0.56 if ch in _HIRAGANA_NA_ROW else 0.30 if _is_kana_char(ch) else 0.42 - kanji_complexity * 0.12
-            )
+            if _is_latin_char(ch):
+                endpoint_factor = 0.48 if ch.isupper() else 0.32
+            else:
+                endpoint_factor = 0.56 if ch in _HIRAGANA_NA_ROW else 0.30 if _is_kana_char(ch) else 0.42 - kanji_complexity * 0.12
+            endpoint_pull = max(0.0, 0.24 - abs(t2 - 0.5)) * endpoint_factor
             px = px * (1.0 - endpoint_pull) + x * endpoint_pull
             py = py * (1.0 - endpoint_pull) + y * endpoint_pull
 
@@ -819,10 +850,10 @@ def _sequence_to_strokes(seq: list[list[float]]) -> list[list[tuple[float, float
     for rowv in seq:
         if not isinstance(rowv, list) or len(rowv) < 4:
             continue
-        lx += float(rowv[0]) * 20.0
-        ly += float(rowv[1]) * 20.0
-        pen = "down" if float(rowv[2]) > 0.5 else "up"
-        widthv = max(1, min(4, int(round(float(rowv[3]) * 4.0))))
+        lx += rowv[0] * 20.0
+        ly += rowv[1] * 20.0
+        pen = "down" if rowv[2] > 0.5 else "up"
+        widthv = max(1, min(4, round(rowv[3] * 4.0)))
         local.append((lx, ly, pen, widthv))
     return _extract_strokes_from_local(local)
 
@@ -838,11 +869,11 @@ def _sequence_step_jump_penalty(seq: list[list[float]]) -> tuple[int, int]:
     for row in seq:
         if not isinstance(row, list) or len(row) < 3:
             continue
-        dx = abs(float(row[0]))
-        dy = abs(float(row[1]))
+        dx = abs(row[0])
+        dy = abs(row[1])
         if dx > 1.8 or dy > 1.8:
             big_any += 1
-            if float(row[2]) > 0.5:
+            if row[2] > 0.5:
                 big_down += 1
     return big_any, big_down
 
@@ -1182,10 +1213,10 @@ def _generate_hiragana_runtime_trajectory(text: str) -> list[dict]:
         for row in seq:
             if not isinstance(row, list) or len(row) < 4:
                 continue
-            lx += float(row[0]) * 20.0
-            ly += float(row[1]) * 20.0
-            pen = "down" if float(row[2]) > 0.5 else "up"
-            width = max(1, min(4, int(round(float(row[3]) * 4.0))))
+            lx += row[0] * 20.0
+            ly += row[1] * 20.0
+            pen = "down" if row[2] > 0.5 else "up"
+            width = max(1, min(4, round(row[3] * 4.0)))
             local.append((lx, ly, pen, width))
         if len(local) < 8:
             return []
@@ -1217,7 +1248,7 @@ def _generate_hiragana_runtime_trajectory(text: str) -> list[dict]:
             if len(sampled_xy) < 2:
                 continue
             width_values = [w for (_x, _y, w) in stroke]
-            stroke_width = max(1, min(4, int(round(sum(width_values) / max(1, len(width_values))))))
+            stroke_width = max(1, min(4, round(sum(width_values) / max(1, len(width_values)))))
             for x_raw, y_raw in sampled_xy:
                 x = cursor_x + (x_raw - min_x) * sx
                 y = base_y + (y_raw - min_y) * sy
@@ -1372,15 +1403,15 @@ def _merge_fragmented_strokes(strokes: list[list[tuple[float, float, int]]]) -> 
             merged.append(list(stroke))
             continue
         prev = merged[-1]
-        dx = float(stroke[0][0] - prev[-1][0])
-        dy = float(stroke[0][1] - prev[-1][1])
+        dx = stroke[0][0] - prev[-1][0]
+        dy = stroke[0][1] - prev[-1][1]
         dist = math.hypot(dx, dy)
         can_merge = dist <= 2.8
         if can_merge and len(prev) >= 2 and len(stroke) >= 2:
-            pvx = float(prev[-1][0] - prev[-2][0])
-            pvy = float(prev[-1][1] - prev[-2][1])
-            nvx = float(stroke[1][0] - stroke[0][0])
-            nvy = float(stroke[1][1] - stroke[0][1])
+            pvx = prev[-1][0] - prev[-2][0]
+            pvy = prev[-1][1] - prev[-2][1]
+            nvx = stroke[1][0] - stroke[0][0]
+            nvy = stroke[1][1] - stroke[0][1]
             plen = math.hypot(pvx, pvy)
             nlen = math.hypot(nvx, nvy)
             if plen > 1e-6 and nlen > 1e-6:
@@ -1389,7 +1420,7 @@ def _merge_fragmented_strokes(strokes: list[list[tuple[float, float, int]]]) -> 
                 if dot < 0.10:
                     can_merge = False
         if can_merge:
-            bridge_w = int(round((prev[-1][2] + stroke[0][2]) * 0.5))
+            bridge_w = round((prev[-1][2] + stroke[0][2]) * 0.5)
             prev.append((stroke[0][0], stroke[0][1], max(1, min(4, bridge_w))))
             prev.extend(stroke[1:])
         else:
@@ -1420,7 +1451,7 @@ def _stroke_redraw_count(stroke: list[tuple[float, float, int]]) -> int:
     seen: dict[tuple[int, int], int] = {}
     redraw = 0
     for idx, (x, y, _w) in enumerate(stroke):
-        cell = (int(round(x)), int(round(y)))
+        cell = (round(x), round(y))
         prev_idx = seen.get(cell)
         if prev_idx is not None and (idx - prev_idx) > 2:
             redraw += 1
@@ -1475,7 +1506,7 @@ def _score_strokes_quality(strokes: list[list[tuple[float, float, int]]]) -> flo
     density = len(all_pts) / max(1.0, span_x + span_y)
     return (
         min(260.0, total_len)
-        + min(80.0, float(span_x + span_y))
+        + min(80.0, span_x + span_y)
         - short_frag * 9.0
         - tiny_frag * 12.0
         - redraw_count * 5.4
@@ -1576,11 +1607,12 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     cell_offset_y = char_h * 0.07
                     advance_w = char_w * 0.64
                 else:
-                    cell_w = char_w * 0.60
-                    cell_h = char_h * 0.74
-                    cell_offset_x = char_w * 0.10
-                    cell_offset_y = char_h * 0.18
-                    advance_w = char_w * (0.35 if ch in {"i", "j", "l"} else 0.56)
+                    # Lowercase: slightly smaller cell than before
+                    cell_w = char_w * 0.54
+                    cell_h = char_h * 0.66
+                    cell_offset_x = char_w * 0.12
+                    cell_offset_y = char_h * 0.22
+                    advance_w = char_w * (0.32 if ch in {"i", "j", "l"} else 0.52)
             is_punctuation = _is_punctuation_char(ch)
             direct_strokes: list[list[tuple[float, float, int]]] | None = None
             punctuation_fallback_strokes: list[list[tuple[float, float, int]]] | None = None
@@ -1746,7 +1778,7 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     density_comp += min(0.05, (0.95 - len_ratio) * 0.12)
 
                 char_bias = _KANA_SIZE_BIAS.get(ch, 1.0)
-                optical_comp = _kana_optical_size_factor(
+               optical_comp = _kana_optical_size_factor(
                     ch=ch,
                     aspect=aspect,
                     density=len_ratio,
@@ -1768,8 +1800,10 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                 if _is_kana_char(ch):
                     sampled_xy = _resample_polyline(raw_xy, spacing=1.32)
                 elif _is_latin_char(ch):
-                    smoothed_xy = _chaikin_smooth(raw_xy, iterations=3)
-                    sampled_xy = _resample_polyline(smoothed_xy, spacing=1.30)
+                    # Higher smoothing to remove pixelation staircases and wobbly artifacts
+                    smooth_iter = 3
+                    smoothed_xy = _chaikin_smooth(raw_xy, iterations=smooth_iter)
+                    sampled_xy = _resample_polyline(smoothed_xy, spacing=1.32)
                 else:
                     # Avoid overly uniform digital roundness: keep some natural angularity.
                     smooth_iter = 2 if len(raw_xy) >= 16 else 1
@@ -1787,7 +1821,7 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                 seg_parts: list[str] = []
                 first_x, first_y = mapped_xy[0]
                 seg_parts.append(f"M{first_x:.2f},{first_y:.2f}")
-                if _is_kana_char(ch):
+                if _is_kana_char(ch) or _is_latin_char(ch):
                     for idx2 in range(1, len(mapped_xy)):
                         lx, ly = mapped_xy[idx2]
                         seg_parts.append(f"L{lx:.2f},{ly:.2f}")
@@ -1825,6 +1859,53 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     complexity = max(0.0, min(1.0, (len(draw_strokes) - 7) / 10.0))
                     stroke_sw = max(0.78, min(1.18, base_sw + sw_rnd * (0.10 + complexity * 0.14)))
                     stroke_paths.append((" ".join(seg_parts), stroke_sw))
+                elif _is_latin_char(ch):
+                    # Realistic pen physics: base pressure varies per stroke,
+                    # downstrokes are bolder, upstrokes/horizontal are thinner,
+                    # with subtle start/end tapering to remove sausage-segment artifacts.
+                    latin_sw_seed = _stable_int_seed(
+                        f"runtime-latin-sw:v2:{render_nonce}:{text}:{row}:{col}:{ch}:{stroke_idx}"
+                    )
+                    sw_rnd = ((latin_sw_seed % 1000) / 1000.0) - 0.5
+                    base_sw = 1.08 if ch.isupper() else 0.88
+                    base_sw = max(0.75, min(1.35, base_sw + sw_rnd * 0.12))
+                    
+                    seg_n = len(mapped_xy)
+                    if seg_n >= 2:
+                        for idx2 in range(1, seg_n):
+                            x0, y0 = mapped_xy[idx2 - 1]
+                            x1, y1 = mapped_xy[idx2]
+                            dx = x1 - x0
+                            dy = y1 - y0
+                            dist = math.sqrt(dx*dx + dy*dy)
+                            
+                            # Downward strokes get bolder, upward get slightly thinner
+                            pressure_bonus = 0.0
+                            if dist > 0.01:
+                                val = dy / dist
+                                if val > 0.0:
+                                    pressure_bonus = 0.18 * (val ** 1.5)
+                                elif val < -0.2:
+                                    pressure_bonus = 0.08 * val
+                                    
+                            t = float(idx2) / float(max(1, seg_n - 1))
+                            
+                            # Very subtle lift-off taper at the end of the stroke (last 12%)
+                            tail_taper = 1.0
+                            if t > 0.88:
+                                tail_factor = (t - 0.88) / 0.12
+                                tail_taper = 1.0 - 0.35 * tail_factor
+                                
+                            # Gentle start taper (first 6%)
+                            start_taper = 1.0
+                            if t < 0.06:
+                                start_factor = t / 0.06
+                                start_taper = 0.82 + 0.18 * start_factor
+                                
+                            seg_sw = max(0.50, (base_sw + pressure_bonus) * tail_taper * start_taper)
+                            stroke_paths.append((f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}", seg_sw))
+                    else:
+                        stroke_paths.append((" ".join(seg_parts), base_sw))
                 else:
                     stroke_paths.append((" ".join(seg_parts), base_sw))
             x += advance_w
@@ -2018,16 +2099,16 @@ def upload_trajectory(
 
     normalized_points: list[dict] = []
     for idx, p in enumerate(payload.points):
-        x = float(p.x)
-        y = float(p.y)
-        t = int(p.t) if p.t >= 0 else idx
-        width = float(p.width)
+        x = p.x
+        y = p.y
+        t = p.t if p.t >= 0 else idx
+        width = p.width
         if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(width)):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_point_values")
         normalized_points.append(
             {
-                "x": int(round(x)),
-                "y": int(round(y)),
+                "x": round(x),
+                "y": round(y),
                 "t": t,
                 "pen_state": p.pen_state,
                 "width": width,

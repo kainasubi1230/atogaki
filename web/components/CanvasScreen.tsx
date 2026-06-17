@@ -98,6 +98,50 @@ function smallKanaScale(ch: string): number {
   return 0.5;
 }
 
+function isLatinChar(ch: string): boolean {
+  if (ch.length !== 1) return false;
+  return /^[A-Za-z0-9]$/.test(ch);
+}
+
+function getLatinCharLayout(ch: string, targetH: number, targetW: number) {
+  if (ch.length !== 1) return { boxW: targetW, boxH: targetH, shiftX: 0, shiftY: 0, advanceW: targetW };
+
+  const isUpper = /^[A-Z0-9]$/.test(ch);
+  const isTallLower = /^[bdfhklt]$/.test(ch);
+  const isShortLower = /^[acemnorsuvwxz]$/.test(ch);
+  const isDescenderLower = /^[gpqy]$/.test(ch);
+
+  let scale = 1.0;
+  let shiftY = 0.0;
+  let shiftX = 0.0;
+
+  if (isUpper) {
+    scale = 1.0;
+    shiftY = 0.0;
+  } else if (isTallLower) {
+    scale = 0.92;
+    shiftY = targetH * 0.08;
+  } else if (isShortLower) {
+    scale = 0.65;
+    shiftY = targetH * 0.35;
+  } else if (isDescenderLower) {
+    scale = 0.88;
+    shiftY = targetH * 0.32;
+  } else if (ch === 'i') {
+    scale = 0.82;
+    shiftY = targetH * 0.18;
+  } else if (ch === 'j') {
+    scale = 1.0;
+    shiftY = targetH * 0.18;
+  }
+
+  const boxH = targetH * scale;
+  const boxW = targetW * scale;
+  const advanceW = boxW;
+
+  return { boxW, boxH, shiftX, shiftY, advanceW };
+}
+
 function buildPunctuationPaths(ch: string): ParsedHandwriting | null {
   const mk = (paths: Array<[string, number]>, viewBox: string, width: number, height: number): ParsedHandwriting => ({
     paths: paths.map(([d, strokeWidth], idx) => ({
@@ -1340,6 +1384,13 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
               drawX += shiftX;
               drawY += shiftY;
+            } else if (isLatinChar(ch)) {
+              const layout = getLatinCharLayout(ch, targetH, targetW);
+              targetW = layout.boxW;
+              boxH = layout.boxH;
+              drawX += layout.shiftX;
+              drawY += layout.shiftY;
+              advanceW = layout.advanceW;
             } else if (isPunctuation(ch)) {
               if (SMALL_PUNCT_CHARS.has(ch)) {
                 const punctH = Math.max(4, baseFont * (ch === "、" || ch === "，" || ch === "," ? 0.3 : 0.22));

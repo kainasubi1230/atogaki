@@ -1,7 +1,7 @@
 import json
 
 
-def dumps(payload: dict) -> str:
+def dumps(payload: dict | list) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 

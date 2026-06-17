@@ -107,6 +107,16 @@ def test_owner_checks_and_generation_guardrails(client: TestClient) -> None:
     assert "AI生成（アクセシビリティ支援）" in data["svg"]
     assert len(data["trajectory"]) > 0
 
+    generated_latin = client.post(
+        "/generate",
+        headers=headers1,
+        json={"user_id": user1["user_id"], "style_id": style_id, "text": "Abc", "purpose": "accessibility"},
+    )
+    assert generated_latin.status_code == 200
+    data_latin = generated_latin.json()
+    assert "AI生成（アクセシビリティ支援）" in data_latin["svg"]
+    assert len(data_latin["trajectory"]) > 0
+
     output = client.get(f"/outputs/{data['output_id']}", headers=headers1)
     assert output.status_code == 200
     assert output.json()["output_id"] == data["output_id"]
@@ -115,6 +125,7 @@ def test_owner_checks_and_generation_guardrails(client: TestClient) -> None:
     logs = client.get("/audit/logs", headers=headers1)
     assert logs.status_code == 200
     assert any(log["event_type"] == "generation_created" for log in logs.json())
+
 
 
 def test_preprocess_failure_reason_code(client: TestClient) -> None:

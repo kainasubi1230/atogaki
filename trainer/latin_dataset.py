@@ -6,6 +6,10 @@ import math
 import random
 from pathlib import Path
 
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import numpy as np
+
+from trainer.public_dataset import _preprocess_labeled_char_image, _image_to_sequence
 from trainerlib.char_token import char_to_model_id
 
 
@@ -39,10 +43,56 @@ def _soften_polyline(points: list[tuple[float, float]], *, iterations: int = 1) 
     return softened
 
 
+def _smooth_wobble(
+    pts: list[tuple[float, float]],
+    *,
+    rng: random.Random,
+    amp: float = 0.6,
+) -> list[tuple[float, float]]:
+    """Apply a smooth perpendicular sine-wave wobble to a polyline.
+
+    Uses an envelope (sin(π·t)) so that endpoints stay anchored.
+    This mirrors the approach in kanjivg_dataset._local_handwritten_variant.
+    """
+    n = len(pts)
+    if n < 3 or amp < 1e-6:
+        return pts
+    phase = rng.uniform(0.0, math.tau)
+    period = rng.uniform(0.5, 1.0)
+    out: list[tuple[float, float]] = []
+    for i, (x, y) in enumerate(pts):
+        t = float(i) / float(max(1, n - 1))
+        # Tangent direction -> normal direction.
+        if i == 0:
+            txv, tyv = pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]
+        elif i == n - 1:
+            txv, tyv = pts[-1][0] - pts[-2][0], pts[-1][1] - pts[-2][1]
+        else:
+            txv, tyv = pts[i + 1][0] - pts[i - 1][0], pts[i + 1][1] - pts[i - 1][1]
+        tn = math.hypot(txv, tyv)
+        if tn > 1e-6:
+            nx, ny = -tyv / tn, txv / tn
+            envelope = math.sin(math.pi * t)
+            wobble = amp * envelope * math.sin(t * math.pi * 2.0 * period + phase)
+            x += nx * wobble
+            y += ny * wobble
+        out.append((x, y))
+    return out
+
+
 def _line(points: list[tuple[float, float]], *, width: float, rng: random.Random, jitter: float = 0.0) -> Stroke:
+    """Render a polyline stroke with organic smooth wobble instead of random noise."""
     out: Stroke = []
-    softened_points = _soften_polyline(points, iterations=1)
-    for idx in range(len(softened_points) - 1):
+    # First soften the control points, then apply smooth wobble.
+    softened_points = _soften_polyline(points, iterations=2)
+
+    # Bow / arc per segment (large-scale curve feel)
+    num_segs = len(softened_points) - 1
+    seg_bows = [rng.uniform(-0.012, 0.012) for _ in range(num_segs)]
+
+    # Sample the full polyline at a fixed resolution.
+    sampled: list[tuple[float, float]] = []
+    for idx in range(num_segs):
         x0, y0 = softened_points[idx]
         x1, y1 = softened_points[idx + 1]
         dist = math.hypot(x1 - x0, y1 - y0)
@@ -51,19 +101,24 @@ def _line(points: list[tuple[float, float]], *, width: float, rng: random.Random
             nx = -(y1 - y0) / dist
             ny = (x1 - x0) / dist
         else:
-            nx = 0.0
-            ny = 0.0
-        bow = rng.uniform(-0.050, 0.050) * dist
-        wave = rng.uniform(-0.020, 0.020) * dist
+            nx, ny = 0.0, 0.0
+        bow_dist = seg_bows[idx] * dist
         for step in range(steps + 1):
             if idx > 0 and step == 0:
                 continue
             t = step / max(1, steps)
             ease = t * t * (3.0 - 2.0 * t)
-            curve = math.sin(math.pi * t) * bow + math.sin(math.tau * t + idx * 0.71) * wave
-            x = x0 + (x1 - x0) * ease + nx * curve + rng.uniform(-jitter, jitter)
-            y = y0 + (y1 - y0) * ease + ny * curve + rng.uniform(-jitter, jitter)
-            out.append((x, y, width * rng.uniform(0.92, 1.10)))
+            arc = math.sin(math.pi * t) * bow_dist
+            x = x0 + (x1 - x0) * ease + nx * arc
+            y = y0 + (y1 - y0) * ease + ny * arc
+            sampled.append((x, y))
+
+    # Apply smooth wobble over the whole stroke (envelope keeps endpoints anchored).
+    wobble_amp = jitter * 14.0  # jitter is ~0.01-0.06; amp in canvas units
+    wobbled = _smooth_wobble(sampled, rng=rng, amp=wobble_amp)
+
+    for x, y in wobbled:
+        out.append((x, y, width * rng.uniform(0.92, 1.10)))
     return out
 
 
@@ -77,14 +132,15 @@ def _quad(
     points: int = 18,
     jitter: float = 0.0,
 ) -> Stroke:
-    out: Stroke = []
+    sampled: list[tuple[float, float]] = []
     for i in range(points):
         t = i / max(1, points - 1)
         mt = 1.0 - t
         x = mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0]
         y = mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1]
-        out.append((x + rng.uniform(-jitter, jitter), y + rng.uniform(-jitter, jitter), width * rng.uniform(0.92, 1.10)))
-    return out
+        sampled.append((x, y))
+    wobbled = _smooth_wobble(sampled, rng=rng, amp=jitter * 14.0)
+    return [(x, y, width * rng.uniform(0.92, 1.10)) for x, y in wobbled]
 
 
 def _cubic(
@@ -98,14 +154,15 @@ def _cubic(
     points: int = 22,
     jitter: float = 0.0,
 ) -> Stroke:
-    out: Stroke = []
+    sampled: list[tuple[float, float]] = []
     for i in range(points):
         t = i / max(1, points - 1)
         mt = 1.0 - t
         x = mt**3 * p0[0] + 3 * mt * mt * t * p1[0] + 3 * mt * t * t * p2[0] + t**3 * p3[0]
         y = mt**3 * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t**3 * p3[1]
-        out.append((x + rng.uniform(-jitter, jitter), y + rng.uniform(-jitter, jitter), width * rng.uniform(0.92, 1.10)))
-    return out
+        sampled.append((x, y))
+    wobbled = _smooth_wobble(sampled, rng=rng, amp=jitter * 14.0)
+    return [(x, y, width * rng.uniform(0.92, 1.10)) for x, y in wobbled]
 
 
 def _oval(cx: float, cy: float, rx: float, ry: float, *, width: float, rng: random.Random, points: int = 30) -> Stroke:
@@ -208,21 +265,55 @@ def _strokes_for_char(ch: str, rng: random.Random) -> list[Stroke]:
     template = _template_for_char(ch)
     if not template:
         return []
-    width = rng.uniform(1.25, 1.95)
-    slant = rng.uniform(-0.10, 0.16)
-    rot = math.radians(rng.uniform(-3.2, 3.2))
-    sx = rng.uniform(0.88, 1.08)
-    sy = rng.uniform(0.90, 1.08)
-    tx = rng.uniform(-2.4, 2.4)
-    ty = rng.uniform(-2.4, 2.4)
+    width = rng.uniform(1.30, 1.70)
+
+    is_upper = ch.isupper()
+    is_lower = ch.islower()
+
+    if is_upper:
+        # Uppercase: clean and balanced.
+        # Tight, symmetric parameters so letters look neat and well-proportioned.
+        slant = rng.uniform(-0.03, 0.03)          # symmetric – no italic bias
+        rot = math.radians(rng.uniform(-1.5, 1.5)) # gentle tilt only
+        sx = rng.uniform(0.94, 1.04)               # tight x-scale
+        sy = rng.uniform(0.94, 1.04)               # tight y-scale
+        tx = rng.uniform(-0.8, 0.8)
+        ty = rng.uniform(-0.8, 0.8)
+        base_jitter = rng.uniform(0.008, 0.018)    # subtle wobble – stays clean
+        compact = 1.0                               # full template size
+    elif is_lower:
+        # Lowercase: slightly smaller than uppercase + organic handwritten wobble.
+        slant = rng.uniform(-0.04, 0.08)           # mild italic feel
+        rot = math.radians(rng.uniform(-3.0, 3.0))
+        sx = rng.uniform(0.92, 1.06)
+        sy = rng.uniform(0.92, 1.06)
+        tx = rng.uniform(-1.0, 1.0)
+        ty = rng.uniform(-1.0, 1.0)
+        base_jitter = rng.uniform(0.030, 0.065)    # stronger wobble for handwritten feel
+        compact = 0.88                             # shrink to ~88 % of template size
+    else:
+        # Digits: moderate parameters.
+        slant = rng.uniform(-0.03, 0.05)
+        rot = math.radians(rng.uniform(-2.0, 2.0))
+        sx = rng.uniform(0.93, 1.05)
+        sy = rng.uniform(0.93, 1.05)
+        tx = rng.uniform(-1.0, 1.0)
+        ty = rng.uniform(-1.0, 1.0)
+        base_jitter = rng.uniform(0.018, 0.038)
+        compact = 1.0
+
     cr = math.cos(rot)
     sr = math.sin(rot)
 
     def transform(pt: tuple[float, float]) -> tuple[float, float]:
         x, y = pt
-        x = (x - 50.0) * sx + slant * (y - 50.0)
-        y = (y - 50.0) * sy
-        return (50.0 + x * cr - y * sr + tx, 50.0 + x * sr + y * cr + ty)
+        # Apply compact scale first (shrinks toward canvas centre 50, 50).
+        x = (x - 50.0) * compact
+        y = (y - 50.0) * compact
+        # Then apply per-variant slant, scale, rotation, shift.
+        xp = x * sx + slant * y
+        yp = y * sy
+        return (50.0 + xp * cr - yp * sr + tx, 50.0 + xp * sr + yp * cr + ty)
 
     strokes: list[Stroke] = []
     for raw in template:
@@ -230,7 +321,9 @@ def _strokes_for_char(ch: str, rng: random.Random) -> list[Stroke]:
         if len(pts) == 1:
             strokes.append(_dot(pts[0][0], pts[0][1], width=width, rng=rng))
         else:
-            strokes.append(_line(pts, width=width, rng=rng, jitter=rng.uniform(0.10, 0.32)))
+            # Each stroke gets its own slightly varied wobble strength.
+            stroke_jitter = base_jitter * rng.uniform(0.7, 1.3)
+            strokes.append(_line(pts, width=width, rng=rng, jitter=stroke_jitter))
     return strokes
 
 
@@ -251,6 +344,74 @@ def _sequence_from_strokes(strokes: list[Stroke]) -> list[list[float]]:
     return seq
 
 
+def _generate_latin_sequence(ch: str, rng: random.Random) -> list[list[float]]:
+    font_path = "storage/fonts/KleeOne-Regular.ttf"
+    size = 128
+    
+    is_upper = ch.isupper()
+    is_lower = ch.islower()
+    
+    if is_upper:
+        # Uppercase: large, clean, very minimal rotation to keep left/right balance
+        font_size = int(size * rng.uniform(0.68, 0.72))
+        angle = rng.uniform(-0.8, 0.8)  # minimal tilt
+        scale = rng.uniform(0.97, 1.03)  # tight scale
+        tx = rng.uniform(-0.8, 0.8)
+        ty = rng.uniform(-0.8, 0.8)
+    elif is_lower:
+        # Lowercase: smaller, slightly more slant/rotation for natural hand-written feel
+        # Scaled down according to user request: "小文字はちょっとサイズ落として"
+        font_size = int(size * rng.uniform(0.52, 0.58))
+        angle = rng.uniform(-3.5, 3.5)  # handwriting-like tilt
+        scale = rng.uniform(0.93, 1.05)
+        tx = rng.uniform(-1.2, 1.2)
+        ty = rng.uniform(0.5, 2.0)  # slightly lower baseline adjustment
+    else:
+        # Digits: clean, balanced
+        font_size = int(size * rng.uniform(0.64, 0.68))
+        angle = rng.uniform(-1.5, 1.5)
+        scale = rng.uniform(0.95, 1.05)
+        tx = rng.uniform(-0.8, 0.8)
+        ty = rng.uniform(-0.8, 0.8)
+        
+    canvas = Image.new("L", (size, size), 255)
+    draw = ImageDraw.Draw(canvas)
+    
+    font = ImageFont.truetype(font_path, font_size)
+    bbox = draw.textbbox((0, 0), ch, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    
+    x = (size - tw) / 2.0 - bbox[0] + tx
+    y = (size - th) / 2.0 - bbox[1] + ty
+    
+    draw.text((x, y), ch, fill=0, font=font)
+    
+    # Apply rotation and scaling
+    transformed = canvas.rotate(
+        angle,
+        resample=Image.Resampling.BICUBIC,
+        expand=True,
+        fillcolor=255,
+    )
+    nw = max(32, int(round(transformed.width * scale)))
+    nh = max(32, int(round(transformed.height * scale)))
+    transformed = transformed.resize((nw, nh), Image.Resampling.BICUBIC)
+    
+    out = Image.new("L", (size, size), 255)
+    ox = int((size - transformed.width) / 2)
+    oy = int((size - transformed.height) / 2)
+    out.paste(transformed, (ox, oy))
+    
+    # Slight blur to smooth edges
+    out = out.filter(ImageFilter.GaussianBlur(rng.uniform(0.12, 0.28)))
+    
+    # Thinning & sequence extraction
+    arr = _preprocess_labeled_char_image(out, normalize_size=96)
+    seq = _image_to_sequence(arr, max_points=120, threshold=128, smooth_profile="latin_klee")
+    return seq
+
+
 def build_latin_dataset(
     *,
     output_path: str | Path,
@@ -265,9 +426,8 @@ def build_latin_dataset(
     with output.open(mode, encoding="utf-8", newline="\n") as f:
         for char_index, ch in enumerate(LATIN_CHARS):
             for variant in range(max(1, variants_per_char)):
-                rng = random.Random(f"latin-v2:{seed}:{ch}:{variant}")
-                strokes = _strokes_for_char(ch, rng)
-                seq = _sequence_from_strokes(strokes)
+                rng = random.Random(f"latin-image-v1:{seed}:{ch}:{variant}")
+                seq = _generate_latin_sequence(ch, rng)
                 if len(seq) < 8:
                     continue
                 payload = {
@@ -277,7 +437,7 @@ def build_latin_dataset(
                     "user_id": 0,
                     "sequence": seq,
                     "meta": {
-                        "source": "latin-generated-v2",
+                        "source": "latin-generated-v4",
                         "char": ch,
                         "variant": variant,
                         "char_index": char_index,

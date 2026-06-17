@@ -903,6 +903,8 @@ def _image_to_sequence_contours(
                 passes, blend, stroke_w = 2, 0.45, 0.72
             else:
                 passes, blend, stroke_w = 2, 0.52, 0.74
+        elif profile == "latin_klee":
+            passes, blend, stroke_w = 1, 0.32, 0.70
         else:
             passes, blend, stroke_w = 3, 0.60, 0.64
         spline_raw_c = _smooth_polyline(sampled_i, passes=passes, blend=blend)
@@ -1022,6 +1024,8 @@ def _image_to_sequence(
                 passes, blend, stroke_w = 2, 0.52, 0.74
             else:
                 passes, blend, stroke_w = 3, 0.58, 0.76
+        elif profile == "latin_klee":
+            passes, blend, stroke_w = 1, 0.32, 0.70
         else:
             # For Latin / default characters: stronger smoothing to tame
             # the noisy Zhang-Suen skeleton from EMNIST bitmaps.

@@ -800,6 +800,13 @@ def _is_hiragana_char(ch: str) -> bool:
     return 0x3041 <= code <= 0x3096
 
 
+def _is_latin_char(ch: str) -> bool:
+    if len(ch) != 1:
+        return False
+    return ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+
+
 def _resample_sequence_rows(seq: list[list[float]], *, max_len: int) -> list[list[float]]:
     if not isinstance(seq, list):
         return []
@@ -1198,25 +1205,34 @@ def _trajectory_from_exemplar(
     t = 0
 
     style_cfg = style_profile if isinstance(style_profile, dict) else {}
-    scale_x_bias = max(0.82, min(1.18, float(style_cfg.get("scale_x", 1.0)))) if style_cfg else 1.0
-    scale_y_bias = max(0.82, min(1.18, float(style_cfg.get("scale_y", 1.0)))) if style_cfg else 1.0
+    raw_scale_x = max(0.82, min(1.18, float(style_cfg.get("scale_x", 1.0)))) if style_cfg else 1.0
+    raw_scale_y = max(0.82, min(1.18, float(style_cfg.get("scale_y", 1.0)))) if style_cfg else 1.0
     width_scale = max(0.85, min(1.25, float(style_cfg.get("width_scale", 1.0)))) if style_cfg else 1.0
-    rot_bias_deg = max(-3.0, min(3.0, float(style_cfg.get("rot_bias_deg", 0.0)))) if style_cfg else 0.0
-    shear_x = max(-0.05, min(0.05, float(style_cfg.get("shear_x", 0.0)))) if style_cfg else 0.0
-    shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
-    jitter_scale = max(0.82, min(1.20, float(style_cfg.get("jitter_scale", 1.0)))) if style_cfg else 1.0
-
-    if correction > 0.0:
-        scale_x_bias = scale_x_bias * (1.0 - correction) + 1.0 * correction
-        scale_y_bias = scale_y_bias * (1.0 - correction) + 1.0 * correction
-        rot_bias_deg = rot_bias_deg * (1.0 - correction)
-        shear_x = shear_x * (1.0 - correction)
-        shear_y = shear_y * (1.0 - correction)
-        jitter_scale = jitter_scale * (1.0 - correction)
+    raw_rot_bias = max(-3.0, min(3.0, float(style_cfg.get("rot_bias_deg", 0.0)))) if style_cfg else 0.0
+    raw_shear_x = max(-0.05, min(0.05, float(style_cfg.get("shear_x", 0.0)))) if style_cfg else 0.0
+    raw_shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
+    raw_jitter_scale = max(0.82, min(1.20, float(style_cfg.get("jitter_scale", 1.0)))) if style_cfg else 1.0
 
     for char in text:
         is_katakana = _is_katakana_char(char)
-        
+        is_latin = _is_latin_char(char)
+        char_correction = max(0.92, correction) if is_latin else correction
+
+        c_scale_x_bias = raw_scale_x
+        c_scale_y_bias = raw_scale_y
+        c_rot_bias_deg = raw_rot_bias
+        c_shear_x = raw_shear_x
+        c_shear_y = raw_shear_y
+        c_jitter_scale = raw_jitter_scale
+
+        if char_correction > 0.0:
+            c_scale_x_bias = c_scale_x_bias * (1.0 - char_correction) + 1.0 * char_correction
+            c_scale_y_bias = c_scale_y_bias * (1.0 - char_correction) + 1.0 * char_correction
+            c_rot_bias_deg = c_rot_bias_deg * (1.0 - char_correction)
+            c_shear_x = c_shear_x * (1.0 - char_correction)
+            c_shear_y = c_shear_y * (1.0 - char_correction)
+            c_jitter_scale = c_jitter_scale * (1.0 - char_correction)
+
         user_char_exemplars = metadata.get("user_char_exemplars")
         user_char_exemplars_text = metadata.get("user_char_exemplars_text")
         base_char_exemplars = metadata.get("base_char_exemplars")
@@ -1244,10 +1260,10 @@ def _trajectory_from_exemplar(
             seq_base = _pick_best_exemplar_sequence(base_bucket, rng, trials=28)
 
         seq = None
-        if seq_user and seq_base and correction > 0.0:
+        if seq_user and seq_base and char_correction > 0.0:
             strokes_u = _seq_to_strokes(seq_user)
             strokes_b = _seq_to_strokes(seq_base)
-            morphed_strokes = _morph_strokes(strokes_u, strokes_b, correction)
+            morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
             seq = _strokes_to_seq(morphed_strokes)
         elif seq_user:
             seq = seq_user
@@ -1297,18 +1313,18 @@ def _trajectory_from_exemplar(
 
         # Keep exemplar geometry and only normalize to a readable character box.
         if is_katakana:
-            target_w = (16.8 + rng.uniform(-0.2, 0.5)) * scale_x_bias
-            target_h = (28.6 + rng.uniform(-0.4, 0.4)) * scale_y_bias
+            target_w = (16.8 + rng.uniform(-0.2, 0.5)) * c_scale_x_bias
+            target_h = (28.6 + rng.uniform(-0.4, 0.4)) * c_scale_y_bias
         else:
-            target_w = (17.0 + rng.uniform(-0.6, 1.2)) * scale_x_bias
-            target_h = (29.0 + rng.uniform(-1.0, 1.0)) * scale_y_bias
+            target_w = (17.0 + rng.uniform(-0.6, 1.2)) * c_scale_x_bias
+            target_h = (29.0 + rng.uniform(-1.0, 1.0)) * c_scale_y_bias
         scale_x = max(0.01, min(2.4, target_w / span_x))
         scale_y = max(0.01, min(2.8, target_h / span_y))
         char_w = span_x * scale_x
         char_h = span_y * scale_y
         base_y = y_offset + (target_h - char_h) * 0.5
 
-        rot = (rot_bias_deg + rng.uniform(-1.2, 1.2) * (0.55 + 0.35 * jitter_scale)) * 3.141592653589793 / 180.0
+        rot = (c_rot_bias_deg + rng.uniform(-1.2, 1.2) * (0.55 + 0.35 * c_jitter_scale)) * 3.141592653589793 / 180.0
         cr = cos(rot)
         sr = sin(rot)
         center_x = x_offset + char_w * 0.5
@@ -1324,13 +1340,13 @@ def _trajectory_from_exemplar(
             # Apply the learned handwriting profile as a gentle affine style
             # transfer. This lets small user samples affect unseen characters
             # without replacing their readable base shape.
-            rel_x = rel_x + shear_x * rel_y
-            rel_y = rel_y + shear_y * rel_x
+            rel_x = rel_x + c_shear_x * rel_y
+            rel_y = rel_y + c_shear_y * rel_x
             tx = center_x + rel_x * cr - rel_y * sr
             ty = center_y + rel_x * sr + rel_y * cr
-            if pen == "down" and jitter_scale > 0.82:
+            if pen == "down" and c_jitter_scale > 0.82:
                 phase = (lx + ly) * 0.065 + stroke_phase
-                amp = min(0.16, max(0.0, (jitter_scale - 0.96) * 0.24))
+                amp = min(0.16, max(0.0, (c_jitter_scale - 0.96) * 0.24))
                 tx += sin(phase) * amp
                 ty += cos(phase * 0.83) * amp * 0.7
             new_width = max(1, min(4, int(round(width * width_scale))))
@@ -1355,7 +1371,8 @@ def _trajectory_from_exemplar(
 
         x_offset += char_w + (rng.uniform(4.8, 6.2) if is_katakana else rng.uniform(5.0, 8.0))
         y_offset += rng.uniform(-0.25, 0.25)
-    smooth_passes = 3 + int(correction * 5)
+    max_correction = max(max(0.92, correction) if _is_latin_char(ch) else correction for ch in text) if text else correction
+    smooth_passes = 3 + int(max_correction * 5)
     smoothed = _smooth_trajectory_points(points, passes=smooth_passes)
     return _postprocess_strokes(smoothed)
 
