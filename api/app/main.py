@@ -1778,7 +1778,7 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                     density_comp += min(0.05, (0.95 - len_ratio) * 0.12)
 
                 char_bias = _KANA_SIZE_BIAS.get(ch, 1.0)
-               optical_comp = _kana_optical_size_factor(
+                optical_comp = _kana_optical_size_factor(
                     ch=ch,
                     aspect=aspect,
                     density=len_ratio,
