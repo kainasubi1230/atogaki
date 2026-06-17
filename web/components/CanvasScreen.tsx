@@ -599,6 +599,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   const [coverage, setCoverage] = useState<StyleCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
 
+  const [isExporting, setIsExporting] = useState(false);
   const [textColor, setTextColor] = useState(COLORS[0].color);
   const [textSize, setTextSize] = useState(24);
   const [paperStyle, setPaperStyle] = useState(PAPERS[0].id);
@@ -697,6 +698,31 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   const setSelectedId = (id: string | null) => {
     setSelectedIds(id ? [id] : []);
   };
+
+  // Keyboard shortcut for deleting selected items
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const activeEl = document.activeElement;
+        if (
+          activeEl &&
+          (activeEl.tagName === "INPUT" ||
+            activeEl.tagName === "TEXTAREA" ||
+            activeEl.getAttribute("contenteditable") === "true")
+        ) {
+          return;
+        }
+        if (selectedIds.length > 0) {
+          e.preventDefault();
+          setItems((prev) => prev.filter((it) => !selectedIds.includes(it.id)));
+          setSelectedIds([]);
+          commitHistory();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedIds, commitHistory]);
 
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
@@ -1058,9 +1084,73 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
   };
 
   const deleteItem = (id: string) => {
-    setItems((prev) => prev.filter((it) => it.id !== id));
-    setSelectedIds((prev) => prev.filter((x) => x !== id));
+    const idsToDelete = selectedIds.includes(id) ? selectedIds : [id];
+    setItems((prev) => prev.filter((it) => !idsToDelete.includes(it.id)));
+    setSelectedIds((prev) => prev.filter((x) => !idsToDelete.includes(x)));
     commitHistory();
+  };
+
+  const handleDownload = async (format: "png" | "svg") => {
+    if (!paperRef.current) return;
+    setIsExporting(true);
+    
+    // Give a small delay for state update to apply and hide UI borders/handles
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Temporarily detach stylesheets that violate CORS to avoid html-to-image cssRules crash
+    const stylesheets = Array.from(document.querySelectorAll("link[rel='stylesheet'], style"));
+    const detachedStylesheets: { element: Element; parent: Node; nextSibling: Node | null }[] = [];
+
+    stylesheets.forEach((el) => {
+      try {
+        const sheet = (el as HTMLStyleElement | HTMLLinkElement).sheet;
+        if (sheet) {
+          // Attempting to read cssRules will throw a SecurityError if cross-origin and blocked by CORS
+          const _ = sheet.cssRules;
+        }
+      } catch (error) {
+        const parent = el.parentNode;
+        if (parent) {
+          detachedStylesheets.push({
+            element: el,
+            parent,
+            nextSibling: el.nextSibling,
+          });
+          parent.removeChild(el);
+        }
+      }
+    });
+
+    try {
+      const { toPng, toSvg } = await import("html-to-image");
+      if (format === "png") {
+        const dataUrl = await toPng(paperRef.current, {
+          quality: 0.98,
+          backgroundColor: "#faf8f5",
+        });
+        const link = document.createElement("a");
+        link.download = `handwriting-${Date.now()}.png`;
+        link.href = dataUrl;
+        link.click();
+      } else {
+        const dataUrl = await toSvg(paperRef.current, {
+          backgroundColor: "#faf8f5",
+        });
+        const link = document.createElement("a");
+        link.download = `handwriting-${Date.now()}.svg`;
+        link.href = dataUrl;
+        link.click();
+      }
+    } catch (error) {
+      console.error("Export failed:", error);
+      alert("画像のダウンロードに失敗しました。");
+    } finally {
+      // Restore the detached stylesheets
+      detachedStylesheets.forEach(({ element, parent, nextSibling }) => {
+        parent.insertBefore(element, nextSibling);
+      });
+      setIsExporting(false);
+    }
   };
 
   const selectedItem = items.find((it) => it.id === selectedId);
@@ -2018,6 +2108,40 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           </div>
         </>
       )}
+
+      <hr className="sidebar-divider" />
+
+      <div className="sidebar-section">
+        <h3>ダウンロード</h3>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button
+            onClick={() => handleDownload("png")}
+            disabled={isProcessing}
+            className="tool-btn"
+            style={{ flex: 1, padding: "0.5rem 0", flexDirection: "row", gap: "6px" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>PNG</span>
+          </button>
+          <button
+            onClick={() => handleDownload("svg")}
+            disabled={isProcessing}
+            className="tool-btn"
+            style={{ flex: 1, padding: "0.5rem 0", flexDirection: "row", gap: "6px" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>SVG</span>
+          </button>
+        </div>
+      </div>
     </div>
 
       <div className="canvas-main">
@@ -2083,7 +2207,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
         <div
           ref={paperRef}
-          className={`paper style-${paperStyle} orientation-${orientation} ${selectedPaperDef.image ? "has-custom-image" : ""}`}
+          className={`paper style-${paperStyle} orientation-${orientation} ${selectedPaperDef.image ? "has-custom-image" : ""} ${isExporting ? "exporting" : ""}`}
           style={{
             cursor: activeTool !== "pointer" ? "crosshair" : "default",
             ...customImageStyle,
