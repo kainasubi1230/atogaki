@@ -615,6 +615,7 @@ def train_lora_adapter(
     *,
     user_samples: list[dict] | None = None,
     vocab_size: int = 4096,
+    base_model_path: str | None = None,
 ) -> TrainResult:
     seed_src = f"{user_id}:{style_id}:{dataset_count}"
     seed = int(hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:8], 16)
@@ -649,6 +650,42 @@ def train_lora_adapter(
     )
     bootstrap_sample_count = sum(1 for s in samples if _sample_source(s).startswith("bootstrap:"))
 
+    learned_weights = None
+    if torch is not None and base_model_path is not None and len(style_samples) > 0:
+        try:
+            model, base_vocab_size, hidden_dim, metadata = _load_base_model(base_model_path)
+            if model is not None:
+                encoded = _encode_samples(style_samples, base_vocab_size)
+                if encoded:
+                    device = _pick_device("auto")
+                    model = model.to(device)
+                    for p in model.parameters():
+                        p.requires_grad = False
+                    model.style_embed.weight.requires_grad = True
+                    
+                    model.train()
+                    optimizer = torch.optim.Adam([model.style_embed.weight], lr=5e-3)
+                    
+                    epochs = 15
+                    batch_size = 16
+                    train_rng = random.Random(42)
+                    for epoch in range(epochs):
+                        train_rng.shuffle(encoded)
+                        for idx in range(0, len(encoded), batch_size):
+                            batch = encoded[idx : idx + batch_size]
+                            char_ids, style_ids, time_steps, targets, mask = _build_batch(batch, device)
+                            pred = model(char_ids, style_ids, time_steps)
+                            squared = F.mse_loss(pred, targets, reduction="none")
+                            loss = (squared * mask.unsqueeze(-1)).sum() / torch.clamp(mask.sum() * 4.0, min=1.0)
+                            optimizer.zero_grad(set_to_none=True)
+                            loss.backward()
+                            optimizer.step()
+                    
+                    with torch.no_grad():
+                        learned_weights = model.style_embed.weight[style_id % 4096].detach().cpu().tolist()
+        except Exception:
+            learned_weights = None
+
     adapter = {
         "user_id": user_id,
         "style_id": style_id,
@@ -663,7 +700,7 @@ def train_lora_adapter(
         "style_profile": style_profile,
         "user_char_exemplars": user_exemplars,
         "user_char_exemplars_text": user_exemplars_text,
-        "weights": [rng.uniform(-0.1, 0.1) for _ in range(64)],
+        "weights": learned_weights,
     }
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1389,6 +1426,17 @@ def _trajectory_from_model(
         return []
 
     style_id = _style_token_from_seed(style_seed)
+    
+    # Inject learned weights if present in the style payload
+    style_payload = _parse_style_seed(style_seed)
+    if isinstance(style_payload, dict) and "weights" in style_payload:
+        weights = style_payload["weights"]
+        if isinstance(weights, list) and len(weights) == _hidden_dim:
+            with torch.no_grad():
+                model.style_embed.weight[style_id].copy_(
+                    torch.tensor(weights, dtype=torch.float32, device=model.style_embed.weight.device)
+                )
+
     if seed_token is None:
         seed_token = secrets.token_hex(8)
     rng_seed = stable_int_token(f"{style_seed}:{text}:{seed_token}", 2**31 - 1)

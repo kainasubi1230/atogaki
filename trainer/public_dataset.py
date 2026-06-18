@@ -404,14 +404,9 @@ def _turn_cost(
 
 
 def _component_to_nonoverlap_paths(component: list[tuple[int, int]], mask: np.ndarray) -> list[list[tuple[int, int]]]:
-    """Traverse a connected skeleton component as a single continuous path using a
-    DFS-with-backtrack strategy (approximating an Euler path).
-
-    When greedy traversal reaches a dead end while unvisited pixels remain, the
-    algorithm backtracks along the already-visited path until it finds a pixel that
-    has unvisited neighbors, then continues forward from there.  This produces ONE
-    connected path per component rather than many fragments, eliminating mid-stroke
-    pen-up jumps (e.g. the 'H' right leg splitting into two pieces).
+    """Traverse a connected skeleton component and split into clean, non-overlapping
+    path segments using a DFS-based exploration without recording backtrack return paths.
+    This generates clean, multi-stroke paths separated by pen-ups, suitable for Kana/Kanji.
     """
     h, w = mask.shape
     pixels = set(component)
@@ -426,7 +421,7 @@ def _component_to_nonoverlap_paths(component: list[tuple[int, int]], mask: np.nd
         ) if (n[0], n[1]) in pixels and 0 <= n[0] < h and 0 <= n[1] < w]
         neighbors[(py, px)] = nbr
 
-    # Start from an endpoint (degree ≤ 1) if available; prefer top-left.
+    # Start from an endpoint (degree <= 1) if available; prefer top-left.
     endpoints = [p for p in pixels if len(neighbors[p]) <= 1]
     if endpoints:
         start = min(endpoints, key=lambda p: (p[1], p[0]))
@@ -434,39 +429,89 @@ def _component_to_nonoverlap_paths(component: list[tuple[int, int]], mask: np.nd
         start = min(pixels, key=lambda p: (p[1], p[0]))
 
     visited: set[tuple[int, int]] = set()
-    path: list[tuple[int, int]] = [start]
+    paths: list[list[tuple[int, int]]] = []
+    
+    current_path: list[tuple[int, int]] = [start]
     visited.add(start)
     prev: tuple[int, int] | None = None
     cur = start
 
     while len(visited) < len(pixels):
-        # Prefer unvisited neighbors; sort by turn cost for smoothness.
         unvisited = [n for n in neighbors[cur] if n not in visited]
         if unvisited:
             nxt = min(unvisited, key=lambda n: _turn_cost(prev, cur, n))
             visited.add(nxt)
-            path.append(nxt)
+            current_path.append(nxt)
             prev, cur = cur, nxt
         else:
-            # Dead end: backtrack along already-visited path until we find a
-            # pixel adjacent to an unvisited one.
-            backtrack_idx = len(path) - 2  # go one step back
+            if len(current_path) >= 2:
+                paths.append(current_path)
+            
+            backtrack_idx = len(current_path) - 2
             found = False
+            
+            # Walk backwards in current path to find any fork to unvisited pixels
             while backtrack_idx >= 0:
-                candidate = path[backtrack_idx]
-                if any(n not in visited for n in neighbors[candidate]):
-                    # Walk back to this pixel (append the return path).
-                    path.extend(reversed(path[backtrack_idx + 1:]))
-                    prev = path[-2] if len(path) >= 2 else None
-                    cur = candidate
+                candidate = current_path[backtrack_idx]
+                candidate_unvisited = [n for n in neighbors[candidate] if n not in visited]
+                if candidate_unvisited:
+                    nxt = candidate_unvisited[0]
+                    visited.add(nxt)
+                    current_path = [nxt]
+                    prev = candidate
+                    cur = nxt
                     found = True
                     break
                 backtrack_idx -= 1
+                
+            # If not found in current path, search in previously completed paths
             if not found:
-                break  # All reachable pixels visited.
+                for completed_path in reversed(paths):
+                    for pixel in reversed(completed_path):
+                        candidate_unvisited = [n for n in neighbors[pixel] if n not in visited]
+                        if candidate_unvisited:
+                            nxt = candidate_unvisited[0]
+                            visited.add(nxt)
+                            current_path = [nxt]
+                            prev = pixel
+                            cur = nxt
+                            found = True
+                            break
+                    if found:
+                        break
+                        
+            # Fallback to any unvisited pixel in the component
+            if not found:
+                remaining = pixels - visited
+                if remaining:
+                    nxt = min(remaining, key=lambda p: (p[1], p[0]))
+                    visited.add(nxt)
+                    current_path = [nxt]
+                    prev = None
+                    cur = nxt
+                else:
+                    break
+                    
+    if len(current_path) >= 2:
+        paths.append(current_path)
+        
+    # Filter out extremely short paths (garbage artifacts of skeletonization)
+    filtered_paths = []
+    for p in paths:
+        dist = 0.0
+        for i in range(1, len(p)):
+            dy = p[i][0] - p[i - 1][0]
+            dx = p[i][1] - p[i - 1][1]
+            dist += (dy * dy + dx * dx) ** 0.5
+        if dist >= 6.0 or len(p) >= 7:
+            filtered_paths.append(p)
+            
+    if not filtered_paths and paths:
+        longest = max(paths, key=len)
+        filtered_paths.append(longest)
+        
+    return filtered_paths
 
-    # Trim tiny duplicate-point runs at the end of backtracking segments.
-    return [path] if len(path) >= 2 else []
 
 
 def _resample_path(points: list[tuple[int, int]], keep_points: int) -> list[tuple[int, int]]:

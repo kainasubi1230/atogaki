@@ -14,6 +14,7 @@ from .database import SessionLocal
 from .jsonutil import dumps, loads
 from .models import Dataset, Job, StyleAdapter
 from .storage import get_storage
+from .settings import settings
 
 HIRAGANA_TARGET = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
 KATAKANA_TARGET = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
@@ -88,6 +89,7 @@ def _collect_user_samples_from_artifact(
     dataset_id: int,
     user_id: int,
     style_id: int,
+    source: str = "user_trajectory",
 ) -> list[dict]:
     if not artifact.get("success"):
         return []
@@ -111,7 +113,7 @@ def _collect_user_samples_from_artifact(
                 "dataset_id": dataset_id,
                 "user_id": user_id,
                 "sequence": seq,
-                "meta": {"source": "user_trajectory", "char": label},
+                "meta": {"source": source, "char": label},
             }
         )
     return out
@@ -318,12 +320,14 @@ def run_train_lora_job(job_id: str) -> None:
                 for segment in segs:
                     if isinstance(segment, dict) and _label_from_segment(segment) is None:
                         unlabeled_segments += 1
+            source = "user_scan" if ds.object_key.startswith("scans/") else "user_trajectory"
             user_samples.extend(
                 _collect_user_samples_from_artifact(
                     artifact,
                     dataset_id=ds.id,
                     user_id=user_id,
                     style_id=style_id,
+                    source=source,
                 )
             )
 
@@ -347,6 +351,7 @@ def run_train_lora_job(job_id: str) -> None:
             len(datasets),
             adapter_path,
             user_samples=user_samples,
+            base_model_path=settings.base_model_path,
         )
         adapter_content = Path(train_result.adapter_path).read_text(encoding="utf-8")
         storage.put_text(adapter_key, adapter_content, "application/json")
