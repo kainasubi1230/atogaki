@@ -155,28 +155,29 @@ def _render_kana_with_font(
     draw = ImageDraw.Draw(canvas)
     is_katakana = _is_katakana_char(char)
     # Narrower randomness for katakana so line thickness is more consistent.
+    # Wider randomness for a more natural, casual look.
     if is_katakana:
-        font_size = int(size * rng.uniform(0.54, 0.60))
+        font_size = int(size * rng.uniform(0.48, 0.64))
     else:
-        font_size = int(size * rng.uniform(0.56, 0.66))
+        font_size = int(size * rng.uniform(0.50, 0.70))
     font = ImageFont.truetype(font_path, font_size)
     bbox = draw.textbbox((0, 0), char, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     if is_katakana:
-        jitter = size * 0.02
+        jitter = size * 0.05
     else:
-        jitter = size * 0.03
+        jitter = size * 0.07
     x = (size - tw) / 2 - bbox[0] + rng.uniform(-jitter, jitter)
     y = (size - th) / 2 - bbox[1] + rng.uniform(-jitter, jitter)
     draw.text((x, y), char, fill=0, font=font)
 
     if is_katakana:
-        angle = rng.uniform(-5.0, 5.0)
-        scale = rng.uniform(0.97, 1.03)
+        angle = rng.uniform(-10.0, 10.0)
+        scale = rng.uniform(0.92, 1.08)
     else:
-        angle = rng.uniform(-7.0, 7.0)
-        scale = rng.uniform(0.94, 1.06)
+        angle = rng.uniform(-14.0, 14.0)
+        scale = rng.uniform(0.88, 1.12)
     transformed = canvas.rotate(
         angle,
         resample=Image.Resampling.BICUBIC,
@@ -187,13 +188,10 @@ def _render_kana_with_font(
     nh = max(32, int(round(transformed.height * scale)))
     transformed = transformed.resize((nw, nh), Image.Resampling.BICUBIC)
     out = Image.new("L", (size, size), 255)
-    ox = int((size - transformed.width) / 2 + rng.uniform(-size * 0.02, size * 0.02))
-    oy = int((size - transformed.height) / 2 + rng.uniform(-size * 0.02, size * 0.02))
+    ox = int((size - transformed.width) / 2 + rng.uniform(-size * 0.05, size * 0.05))
+    oy = int((size - transformed.height) / 2 + rng.uniform(-size * 0.05, size * 0.05))
     out.paste(transformed, (ox, oy))
     out = out.filter(ImageFilter.GaussianBlur(rng.uniform(0.08, 0.28)))
-    if is_katakana:
-        # Thins black strokes slightly while keeping white background.
-        out = out.filter(ImageFilter.MaxFilter(3))
     return out
 
 
@@ -272,11 +270,11 @@ def generate_kana_image(
     else:
         raise ValueError(f"unsupported char for image generation: {char}")
 
-    # Keep augmentation intentionally narrow for stable readability.
-    angle = rng.uniform(-6.0, 6.0)
-    scale = rng.uniform(0.94, 1.08)
-    tx = rng.uniform(-2.5, 2.5)
-    ty = rng.uniform(-2.5, 2.5)
+    # Keep augmentation wide for natural handwriting variety.
+    angle = rng.uniform(-12.0, 12.0)
+    scale = rng.uniform(0.88, 1.15)
+    tx = rng.uniform(-5.0, 5.0)
+    ty = rng.uniform(-5.0, 5.0)
 
     transformed = base.rotate(
         angle,
@@ -368,6 +366,7 @@ def generate_kana_image_best(
     trials: int = 12,
 ) -> Image.Image:
     template = _char_template(char, input_dir=input_dir, size=96)
+    rng = _rng_from_seed(f"best:{style_seed}:{char}")
     best_img: Image.Image | None = None
     best_score = -1.0
     for idx in range(max(1, trials)):
@@ -378,8 +377,10 @@ def generate_kana_image_best(
             size=size,
         )
         score = _iou(template, _image_to_mask(img, size=96))
-        if score > best_score:
-            best_score = score
+        # Add small random noise to allow organic variation
+        score_perturbed = score + rng.uniform(-0.06, 0.06)
+        if score_perturbed > best_score:
+            best_score = score_perturbed
             best_img = img
     if best_img is None:
         return generate_kana_image(char, style_seed=style_seed, input_dir=input_dir, size=size)

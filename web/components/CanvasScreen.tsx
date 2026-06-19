@@ -1263,9 +1263,18 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
     const startTime = Date.now();
     try {
       const canConvertWithoutStyle = textsToConvert.every((item) => isAsciiRenderableText(item.text));
-      if (!token || !userId || (!styleId && !canConvertWithoutStyle)) {
+      if (!token || !userId) {
         alert("スタイル準備ができていません。先に画像アップロードをやり直してください。");
         return;
+      }
+
+      // If no user-trained style is available, allow conversion using the
+      // default/base model (style_id = 0) after user confirmation. ASCII-only
+      // text can already be converted without a style; non-ASCII text needs a
+      // style but we can fall back to base model with lower quality.
+      let useFallbackDefaultStyle = false;
+      if (!styleId && !canConvertWithoutStyle) {
+        useFallbackDefaultStyle = true;
       }
 
       let newItems: CanvasItem[] = [];
@@ -1300,7 +1309,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                 "/generate",
                 {
                   user_id: userId,
-                  style_id: styleId ?? 0,
+                  style_id: useFallbackDefaultStyle ? 0 : styleId ?? 0,
                   text: ch,
                   purpose: "accessibility",
                 },

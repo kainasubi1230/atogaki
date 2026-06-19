@@ -194,3 +194,22 @@ def test_inference_only_shared_style_flow(client: TestClient) -> None:
     finally:
         object.__setattr__(settings, "inference_only", original_inference_only)
         object.__setattr__(settings, "shared_style_id", original_shared_style_id)
+
+
+def test_canvas_mode_style_zero_katakana_kanji(client: TestClient) -> None:
+    user = _signup(client, "canvas@example.com")
+    headers = {"Authorization": f"Bearer {user['access_token']}"}
+
+    response = client.post(
+        "/generate",
+        headers=headers,
+        json={
+            "user_id": user["user_id"],
+            "style_id": 0,
+            "text": "カタカナ漢字テスト",
+            "purpose": "accessibility",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "AI生成（アクセシビリティ支援）" in data["svg"]

@@ -122,6 +122,7 @@ _KANA_SIZE_BIAS: dict[str, float] = {
     "ぬ": 1.02,
     "る": 1.02,
     "ロ": 1.02,
+    "ー": 0.55,
 }
 _OPTICALLY_NARROW_KANA = set("いりしくけにハリノイトレ")
 _OPTICALLY_ROUND_KANA = set("のめぬるろあおロ")
@@ -186,6 +187,7 @@ def _is_katakana_char(ch: str) -> bool:
     code = ord(ch)
     return (
         0x30A1 <= code <= 0x30FA
+        or code == 0x30FC
         or 0x30FD <= code <= 0x30FF
         or 0x31F0 <= code <= 0x31FF
         or 0xFF66 <= code <= 0xFF9D
@@ -601,51 +603,51 @@ def _apply_runtime_variation(
         )
 
     # Keep shape stable; only add subtle handwritten variation.
-    rot_deg = float(rng.uniform(-2.1, 2.1))
-    scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
-    scale_y = float(1.0 + rng.uniform(-0.028, 0.028))
-    shear = float(rng.uniform(-0.022, 0.022))
-    shift_x = float(rng.uniform(-0.45, 0.45))
-    shift_y = float(rng.uniform(-0.45, 0.45))
+    rot_deg = float(rng.uniform(-3.5, 3.5))
+    scale_x = float(1.0 + rng.uniform(-0.045, 0.045))
+    scale_y = float(1.0 + rng.uniform(-0.045, 0.045))
+    shear = float(rng.uniform(-0.04, 0.04))
+    shift_x = float(rng.uniform(-0.65, 0.65))
+    shift_y = float(rng.uniform(-0.65, 0.65))
     if _is_kana_char(ch):
-        rot_deg = float(rng.uniform(-1.85, 1.85))
-        scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
-        scale_y = float(1.0 + rng.uniform(-0.026, 0.026))
-        shear = float(rng.uniform(-0.017, 0.017))
-        shift_x = float(rng.uniform(-0.42, 0.42))
-        shift_y = float(rng.uniform(-0.38, 0.38))
+        rot_deg = float(rng.uniform(-3.2, 3.2))
+        scale_x = float(1.0 + rng.uniform(-0.045, 0.045))
+        scale_y = float(1.0 + rng.uniform(-0.045, 0.045))
+        shear = float(rng.uniform(-0.035, 0.035))
+        shift_x = float(rng.uniform(-0.62, 0.62))
+        shift_y = float(rng.uniform(-0.58, 0.58))
     if ch in _HIRAGANA_NA_ROW:
-        rot_deg = float(rng.uniform(-1.05, 1.05))
-        scale_x = float(1.0 + rng.uniform(-0.014, 0.014))
-        scale_y = float(1.0 + rng.uniform(-0.014, 0.014))
-        shear = float(rng.uniform(-0.010, 0.010))
-        shift_x = float(rng.uniform(-0.24, 0.24))
-        shift_y = float(rng.uniform(-0.24, 0.24))
+        rot_deg = float(rng.uniform(-2.2, 2.2))
+        scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
+        scale_y = float(1.0 + rng.uniform(-0.028, 0.028))
+        shear = float(rng.uniform(-0.024, 0.024))
+        shift_x = float(rng.uniform(-0.42, 0.42))
+        shift_y = float(rng.uniform(-0.42, 0.42))
     if _is_kanji_char(ch):
-        natural = 0.45 + kanji_complexity * 0.36
+        natural = 0.55 + kanji_complexity * 0.36
         rot_deg *= natural
-        scale_x = 1.0 + (scale_x - 1.0) * (0.38 + kanji_complexity * 0.26)
-        scale_y = 1.0 + (scale_y - 1.0) * (0.38 + kanji_complexity * 0.26)
-        shear *= 0.28 + kanji_complexity * 0.28
-        shift_x *= 0.45 + kanji_complexity * 0.30
-        shift_y *= 0.45 + kanji_complexity * 0.30
+        scale_x = 1.0 + (scale_x - 1.0) * (0.48 + kanji_complexity * 0.26)
+        scale_y = 1.0 + (scale_y - 1.0) * (0.48 + kanji_complexity * 0.26)
+        shear *= 0.38 + kanji_complexity * 0.28
+        shift_x *= 0.55 + kanji_complexity * 0.30
+        shift_y *= 0.55 + kanji_complexity * 0.30
     if _is_latin_char(ch):
         if ch.isupper():
             # Uppercase: extremely stable and clean
-            rot_deg = float(rng.uniform(-0.5, 0.5))
-            scale_x = float(1.0 + rng.uniform(-0.012, 0.012))
-            scale_y = float(1.0 + rng.uniform(-0.012, 0.012))
-            shear = float(rng.uniform(-0.005, 0.005))
-            shift_x = float(rng.uniform(-0.15, 0.15))
-            shift_y = float(rng.uniform(-0.15, 0.15))
+            rot_deg = float(rng.uniform(-1.2, 1.2))
+            scale_x = float(1.0 + rng.uniform(-0.025, 0.025))
+            scale_y = float(1.0 + rng.uniform(-0.025, 0.025))
+            shear = float(rng.uniform(-0.015, 0.015))
+            shift_x = float(rng.uniform(-0.3, 0.3))
+            shift_y = float(rng.uniform(-0.3, 0.3))
         else:
             # Lowercase / Digits: allow moderate organic tilt and variation
-            rot_deg = float(rng.uniform(-2.2, 2.2))
-            scale_x = float(1.0 + rng.uniform(-0.028, 0.028))
-            scale_y = float(1.0 + rng.uniform(-0.028, 0.028))
-            shear = float(rng.uniform(-0.018, 0.018))
-            shift_x = float(rng.uniform(-0.42, 0.42))
-            shift_y = float(rng.uniform(-0.40, 0.40))
+            rot_deg = float(rng.uniform(-3.8, 3.8))
+            scale_x = float(1.0 + rng.uniform(-0.045, 0.045))
+            scale_y = float(1.0 + rng.uniform(-0.045, 0.045))
+            shear = float(rng.uniform(-0.035, 0.035))
+            shift_x = float(rng.uniform(-0.62, 0.62))
+            shift_y = float(rng.uniform(-0.60, 0.60))
 
     rot = math.radians(rot_deg)
     cr = math.cos(rot)
@@ -656,37 +658,37 @@ def _apply_runtime_variation(
         if len(stroke) < 2:
             varied.append(stroke)
             continue
-        amp = float(rng.uniform(0.06, 0.17))
+        amp = float(rng.uniform(0.08, 0.25))
         if _is_kanji_char(ch):
-            amp *= 0.42 + kanji_complexity * 0.52
+            amp *= 0.52 + kanji_complexity * 0.52
         if _is_kana_char(ch):
-            amp = float(rng.uniform(0.038, 0.112))
+            amp = float(rng.uniform(0.06, 0.18))
         if _is_latin_char(ch):
             if ch.isupper():
-                amp = float(rng.uniform(0.008, 0.024))  # very subtle bend for uppercase
+                amp = float(rng.uniform(0.015, 0.045))  # very subtle bend for uppercase
             else:
-                amp = float(rng.uniform(0.016, 0.048))  # natural handwritten bend for lowercase
+                amp = float(rng.uniform(0.03, 0.08))  # natural handwritten bend for lowercase
         if ch in _HIRAGANA_NA_ROW:
             amp *= 0.80
-        s_tx = float(rng.uniform(-0.18, 0.18))
-        s_ty = float(rng.uniform(-0.18, 0.18))
+        s_tx = float(rng.uniform(-0.28, 0.28))
+        s_ty = float(rng.uniform(-0.28, 0.28))
         if _is_kanji_char(ch):
-            stroke_shift = 0.09 + kanji_complexity * 0.16
+            stroke_shift = 0.15 + kanji_complexity * 0.24
             s_tx = float(rng.uniform(-stroke_shift, stroke_shift))
             s_ty = float(rng.uniform(-stroke_shift, stroke_shift))
         if _is_kana_char(ch):
-            s_tx = float(rng.uniform(-0.22, 0.22))
-            s_ty = float(rng.uniform(-0.20, 0.20))
+            s_tx = float(rng.uniform(-0.35, 0.35))
+            s_ty = float(rng.uniform(-0.32, 0.32))
         if _is_latin_char(ch):
             if ch.isupper():
-                s_tx = float(rng.uniform(-0.04, 0.04))
-                s_ty = float(rng.uniform(-0.04, 0.04))
-            else:
                 s_tx = float(rng.uniform(-0.08, 0.08))
                 s_ty = float(rng.uniform(-0.08, 0.08))
+            else:
+                s_tx = float(rng.uniform(-0.16, 0.16))
+                s_ty = float(rng.uniform(-0.16, 0.16))
         if ch in _HIRAGANA_NA_ROW:
-            s_tx = float(rng.uniform(-0.09, 0.09))
-            s_ty = float(rng.uniform(-0.09, 0.09))
+            s_tx = float(rng.uniform(-0.18, 0.18))
+            s_ty = float(rng.uniform(-0.18, 0.18))
         # Low-frequency bend: avoids digital-looking micro-wiggles.
         bend_center = float(rng.uniform(0.32, 0.68))
         bend_width = float(rng.uniform(0.42, 0.78))
@@ -733,9 +735,9 @@ def _apply_runtime_variation(
             # Slight endpoint anchor keeps shapes readable.
             t2 = float(i) / float(max(1, n - 1))
             if _is_latin_char(ch):
-                endpoint_factor = 0.48 if ch.isupper() else 0.32
+                endpoint_factor = 0.32 if ch.isupper() else 0.20
             else:
-                endpoint_factor = 0.56 if ch in _HIRAGANA_NA_ROW else 0.30 if _is_kana_char(ch) else 0.42 - kanji_complexity * 0.12
+                endpoint_factor = 0.38 if ch in _HIRAGANA_NA_ROW else 0.18 if _is_kana_char(ch) else 0.28 - kanji_complexity * 0.08
             endpoint_pull = max(0.0, 0.24 - abs(t2 - 0.5)) * endpoint_factor
             px = px * (1.0 - endpoint_pull) + x * endpoint_pull
             py = py * (1.0 - endpoint_pull) + y * endpoint_pull
@@ -1059,17 +1061,17 @@ def _select_runtime_char_sequence(ch: str, *, seed: str) -> list[list[float]] | 
     if not candidates:
         return None
     if ch in {"い", "う", "え", "お"}:
-        top_n = min(6, len(candidates))
-    elif _is_kanji_char(ch):
-        # Prefer top-ranked stable kanji forms.
-        top_n = min(3, len(candidates))
-    elif _is_kana_char(ch):
         top_n = min(10, len(candidates))
+    elif _is_kanji_char(ch):
+        # Prefer top-ranked stable kanji forms but allow some casual ones.
+        top_n = min(7, len(candidates))
+    elif _is_kana_char(ch):
+        top_n = min(15, len(candidates))
     elif _is_latin_char(ch):
-        # Prefer only the top 2 highest-quality EMNIST characters to keep the handwriting neat
-        top_n = min(2, len(candidates))
+        # Prefer the top 4 highest-quality EMNIST characters
+        top_n = min(4, len(candidates))
     else:
-        top_n = min(6, len(candidates))
+        top_n = min(10, len(candidates))
     idx = _stable_int_seed(seed) % top_n
     return candidates[idx]
 
@@ -1691,9 +1693,25 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
 
             attempt_rows.sort(key=lambda it: it[0], reverse=True)
             best_score = attempt_rows[0][0]
-            # Keep quality stable but allow mild base-shape randomness for kana.
+            # Keep quality stable but allow mild base-shape randomness for all character categories.
             if _is_kana_char(ch):
-                base_band = [it for it in attempt_rows if it[0] >= (best_score - 13.0)]
+                base_band = [it for it in attempt_rows if it[0] >= (best_score - 18.0)]
+                if not base_band:
+                    base_band = [attempt_rows[0]]
+                base_pick = _stable_int_seed(
+                    f"runtime-base-pick:v2:{render_nonce}:{text}:{row}:{col}:{ch}"
+                ) % len(base_band)
+                base_score, best_strokes = base_band[base_pick]
+            elif _is_kanji_char(ch):
+                base_band = [it for it in attempt_rows if it[0] >= (best_score - 12.0)]
+                if not base_band:
+                    base_band = [attempt_rows[0]]
+                base_pick = _stable_int_seed(
+                    f"runtime-base-pick:v2:{render_nonce}:{text}:{row}:{col}:{ch}"
+                ) % len(base_band)
+                base_score, best_strokes = base_band[base_pick]
+            elif _is_latin_char(ch):
+                base_band = [it for it in attempt_rows if it[0] >= (best_score - 15.0)]
                 if not base_band:
                     base_band = [attempt_rows[0]]
                 base_pick = _stable_int_seed(
@@ -1787,6 +1805,30 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                 size_comp = fill * aspect_comp * density_comp * char_bias * optical_comp
                 # Mild anisotropic normalization reduces per-character size gaps.
                 blend = 0.36
+            elif _is_kanji_char(ch):
+                kanji_size_seed = _stable_int_seed(
+                    f"runtime-kanji-size:v1:{render_nonce}:{text}:{row}:{col}:{ch}"
+                )
+                rnd = ((kanji_size_seed % 1000) / 1000.0) - 0.5
+                aspect = span_y / max(1e-6, span_x)
+                pts_count = sum(len(s) for s in draw_strokes)
+                complexity = max(0.0, min(1.0, max((len(draw_strokes) - 7) / 10.0, (pts_count - 120) / 180.0)))
+                
+                # Simple kanji should be naturally smaller
+                base_fill = 0.68 + complexity * 0.28
+                
+                # Extreme aspect ratios (like "一") should be scaled down to prevent looking huge
+                if aspect < 0.5:
+                    base_fill *= 0.45 + aspect
+                elif aspect > 2.0:
+                    base_fill *= 0.80
+                    
+                size_comp = base_fill + rnd * 0.05
+                # Kanji must preserve exact angles; anisotropic stretch breaks them
+                blend = 0.0
+            elif _is_latin_char(ch):
+                blend = 0.05
+                size_comp = 0.95
 
             scale_x = (iso * (1.0 - blend) + fit_x * blend) * size_comp
             scale_y = (iso * (1.0 - blend) + fit_y * blend) * size_comp
@@ -2312,23 +2354,39 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
     if use_shared_style:
         style = _get_shared_style(db)
     else:
-        style = (
-            db.query(StyleAdapter)
-            .filter(StyleAdapter.id == payload.style_id, StyleAdapter.user_id == payload.user_id)
-            .first()
-        )
-        if style is None and (not use_model_for_text):
+        if payload.style_id == 0:
             style = (
                 db.query(StyleAdapter)
-                .filter(StyleAdapter.user_id == payload.user_id)
-                .order_by(StyleAdapter.id.desc())
+                .filter(StyleAdapter.user_id == payload.user_id, StyleAdapter.adapter_key == None)
                 .first()
             )
-        if style is None and (not use_model_for_text):
-            style = StyleAdapter(user_id=payload.user_id, status="ready", adapter_key=None, disabled=False)
-            db.add(style)
-            db.commit()
-            db.refresh(style)
+            if style is None:
+                style = StyleAdapter(user_id=payload.user_id, status="ready", adapter_key=None, disabled=False)
+                db.add(style)
+                db.commit()
+                db.refresh(style)
+        else:
+            style = (
+                db.query(StyleAdapter)
+                .filter(StyleAdapter.id == payload.style_id, StyleAdapter.user_id == payload.user_id)
+                .first()
+            )
+            if style is None:
+                existing_style = db.query(StyleAdapter).filter(StyleAdapter.id == payload.style_id).first()
+                if existing_style is not None:
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="style_owner_mismatch")
+
+                style = (
+                    db.query(StyleAdapter)
+                    .filter(StyleAdapter.user_id == payload.user_id)
+                    .order_by(StyleAdapter.id.desc())
+                    .first()
+                )
+            if style is None:
+                style = StyleAdapter(user_id=payload.user_id, status="ready", adapter_key=None, disabled=False)
+                db.add(style)
+                db.commit()
+                db.refresh(style)
         if style is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="style_owner_mismatch")
 
@@ -2384,7 +2442,12 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             return candidate
         return []
 
-    if settings.text_only_mode or (not use_model_for_text and not use_runtime_hiragana and not use_runtime_latin):
+    if settings.text_only_mode or (
+        not use_model_for_text
+        and not use_runtime_hiragana
+        and not use_runtime_latin
+        and not _is_japanese_text(payload.text)
+    ):
         trajectory = []
         svg = _fallback_svg(payload.text)
     elif _is_japanese_text(payload.text):
