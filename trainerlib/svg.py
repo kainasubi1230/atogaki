@@ -230,8 +230,6 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             f_end = 3 * (f_end ** 2) - 2 * (f_end ** 3)
             return f_start * f_end
 
-        stroke_paths: list[str] = []
-
         # n == 2 の場合 (単純な直線)
         if n == 2:
             x0, y0, w0 = stroke[0]
@@ -241,13 +239,19 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             w_base = (w0 + w1) / 2.0
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * dists[1]))
             fade = get_fade_at(dists[1] / 2.0)
-            w_eff = w_base * vel_factor * (0.45 + 0.55 * fade)
-            w_eff = max(0.55, min(2.2, w_eff))
+            
+            # 鉛筆/極細ペン風の太さ調整 (0.72倍縮小スケーリング)
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
+            w_eff = max(0.45, min(1.35, w_eff))
+            
+            # 速度とかすれ（フェード）をカップリングさせた自然なインク濃淡
+            opacity_eff = (0.35 + 0.55 * fade) * vel_factor
+            opacity_eff = max(0.38, min(0.93, opacity_eff))
             
             d_path = f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}"
-            stroke_paths.append(
+            svg_paths.append(
                 f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{w_eff:.2f}' "
-                f"stroke-linecap='round' stroke-linejoin='round'/>"
+                f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
             )
         else:
             # --- 最初の区間 (制御点: stroke[1], 終点: m1) ---
@@ -261,13 +265,17 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             d = dists[1]
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
             fade = get_fade_at(cum_dists[1] / 2.0)
-            w_eff = w_base * vel_factor * (0.45 + 0.55 * fade)
-            w_eff = max(0.55, min(2.2, w_eff))
+            
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
+            w_eff = max(0.45, min(1.35, w_eff))
+            
+            opacity_eff = (0.35 + 0.55 * fade) * vel_factor
+            opacity_eff = max(0.38, min(0.93, opacity_eff))
             
             d_path = f"M{x0:.2f},{y0:.2f} Q{x1:.2f},{y1:.2f} {m1_x:.2f},{m1_y:.2f}"
-            stroke_paths.append(
+            svg_paths.append(
                 f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{w_eff:.2f}' "
-                f"stroke-linecap='round' stroke-linejoin='round'/>"
+                f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
             )
 
             # --- 中間区間 (制御点: stroke[idx]) ---
@@ -284,13 +292,17 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
                 d = dists[idx]
                 vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
                 fade = get_fade_at(cum_dists[idx])
-                w_eff = w_base * vel_factor * (0.45 + 0.55 * fade)
-                w_eff = max(0.55, min(2.2, w_eff))
+                
+                w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
+                w_eff = max(0.45, min(1.35, w_eff))
+                
+                opacity_eff = (0.35 + 0.55 * fade) * vel_factor
+                opacity_eff = max(0.38, min(0.93, opacity_eff))
 
                 d_path = f"M{m_prev_x:.2f},{m_prev_y:.2f} Q{cx:.2f},{cy:.2f} {m_next_x:.2f},{m_next_y:.2f}"
-                stroke_paths.append(
+                svg_paths.append(
                     f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{w_eff:.2f}' "
-                    f"stroke-linecap='round' stroke-linejoin='round'/>"
+                    f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
                 )
 
             # --- 最後の区間 (m_{n-2} -> p_{n-1} 直線) ---
@@ -303,20 +315,18 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             d = dists[-1]
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
             fade = get_fade_at(total_len - dists[-1] / 2.0)
-            w_eff = w_base * vel_factor * (0.45 + 0.55 * fade)
-            w_eff = max(0.55, min(2.2, w_eff))
+            
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
+            w_eff = max(0.45, min(1.35, w_eff))
+            
+            opacity_eff = (0.35 + 0.55 * fade) * vel_factor
+            opacity_eff = max(0.38, min(0.93, opacity_eff))
 
             d_path = f"M{m_last_x:.2f},{m_last_y:.2f} L{last_x:.2f},{last_y:.2f}"
-            stroke_paths.append(
+            svg_paths.append(
                 f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{w_eff:.2f}' "
-                f"stroke-linecap='round' stroke-linejoin='round'/>"
+                f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
             )
-
-        # 全ての path を `<g opacity='0.92'>` で囲み、重複部分の二重半透明ブレンド（数珠状の斑点）を防ぎつつ、紙染みインク感を表現
-        paths_joined_str = "\n  ".join(stroke_paths)
-        svg_paths.append(
-            f"<g opacity='0.92'>\n  {paths_joined_str}\n</g>"
-        )
 
     paths_joined = "\n".join(svg_paths)
     return (
