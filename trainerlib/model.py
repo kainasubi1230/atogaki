@@ -1525,7 +1525,7 @@ def _blend_widths(strokes_dest, strokes_src, corr_width):
     return dest_strokes_new
 
 
-def _morph_strokes(strokes_u, strokes_b, correction):
+def _morph_strokes(strokes_u, strokes_b, correction, strokes_m=None):
     if not strokes_u:
         return strokes_b
     if not strokes_b:
@@ -1542,6 +1542,7 @@ def _morph_strokes(strokes_u, strokes_b, correction):
         return strokes_u
 
     strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
+    strokes_m_aligned = _align_character_bbox(strokes_m, strokes_u) if strokes_m else None
     n = len(strokes_u)
 
     centroids_u = []
@@ -1571,15 +1572,31 @@ def _morph_strokes(strokes_u, strokes_b, correction):
             best_perm = perm
 
     strokes_b_aligned_sorted = [strokes_b_aligned[best_perm[i]] for i in range(n)]
+    strokes_m_aligned_sorted = [strokes_m_aligned[best_perm[i]] for i in range(n)] if (strokes_m_aligned and len(strokes_m_aligned) == n) else None
     strokes_u_sorted = strokes_u
 
     morphed = []
     for i in range(n):
         su = strokes_u_sorted[i]
         sb = strokes_b_aligned_sorted[i]
+        sm = strokes_m_aligned_sorted[i] if strokes_m_aligned_sorted else None
+
+        # Align stroke direction
+        d_same = (su[0][0] - sb[0][0])**2 + (su[0][1] - sb[0][1])**2 + (su[-1][0] - sb[-1][0])**2 + (su[-1][1] - sb[-1][1])**2
+        d_opp = (su[0][0] - sb[-1][0])**2 + (su[0][1] - sb[-1][1])**2 + (su[-1][0] - sb[0][0])**2 + (su[-1][1] - sb[0][1])**2
+        if d_opp < d_same:
+            sb = list(reversed(sb))
+
+        if sm:
+            d_same_m = (su[0][0] - sm[0][0])**2 + (su[0][1] - sm[0][1])**2 + (su[-1][0] - sm[-1][0])**2 + (su[-1][1] - sm[-1][1])**2
+            d_opp_m = (su[0][0] - sm[-1][0])**2 + (su[0][1] - sm[-1][1])**2 + (su[-1][0] - sm[0][0])**2 + (su[-1][1] - sm[0][1])**2
+            if d_opp_m < d_same_m:
+                sm = list(reversed(sm))
+
         target_len = max(len(su), len(sb))
         ru = _resample_stroke(su, target_len)
         rb = _resample_stroke(sb, target_len)
+        rm = _resample_stroke(sm, target_len) if sm else None
         
         c_ux = sum(p[0] for p in ru) / target_len
         c_uy = sum(p[1] for p in ru) / target_len
@@ -1597,12 +1614,28 @@ def _morph_strokes(strokes_u, strokes_b, correction):
             ox_u, oy_u = ux - c_ux, uy - c_uy
             ox_b, oy_b = bx - c_bx, by - c_by
             
-            ox_m = ox_u * (1.0 - corr_shape) + ox_b * corr_shape
-            oy_m = oy_u * (1.0 - corr_shape) + oy_b * corr_shape
+            if rm:
+                c_mx = sum(p[0] for p in rm) / target_len
+                c_my = sum(p[1] for p in rm) / target_len
+                ox_model = rm[j][0] - c_mx
+                oy_model = rm[j][1] - c_my
+                mw_model = rm[j][2]
+                
+                # Blend clean base model's shape with the model's learned roundness (70% weight for learned roundness)
+                ox_target_base = ox_b * 0.3 + ox_model * 0.7
+                oy_target_base = oy_b * 0.3 + oy_model * 0.7
+                w_target_base = bw * 0.3 + mw_model * 0.7
+            else:
+                ox_target_base = ox_b
+                oy_target_base = oy_b
+                w_target_base = bw
+            
+            ox_m = ox_u * (1.0 - corr_shape) + ox_target_base * corr_shape
+            oy_m = oy_u * (1.0 - corr_shape) + oy_target_base * corr_shape
             
             mx = cx_m + ox_m
             my = cy_m + oy_m
-            mw = uw * (1.0 - corr_width) + bw * corr_width
+            mw = uw * (1.0 - corr_width) + w_target_base * corr_width
             
             m_stroke.append((mx, my, mw))
         morphed.append(m_stroke)
@@ -1617,6 +1650,8 @@ def _trajectory_from_exemplar(
     rng: random.Random,
     style_profile: dict[str, Any] | None = None,
     correction: float = 0.45,
+    model: Any = None,
+    hidden_dim: int | None = None,
 ) -> list[dict]:
     char_exemplars = metadata.get("char_exemplars")
     if not isinstance(char_exemplars, dict):
@@ -1629,7 +1664,8 @@ def _trajectory_from_exemplar(
     style_cfg = style_profile if isinstance(style_profile, dict) else {}
     raw_scale_x = 1.0
     raw_scale_y = 1.0
-    width_scale = 1.0
+    width_scale = max(0.5, min(2.5, float(style_cfg.get("width_scale", 1.0)))) if style_cfg else 1.0
+    width_scale_boosted = width_scale * 1.15
     raw_rot_bias = max(-3.0, min(3.0, float(style_cfg.get("rot_bias_deg", 0.0)))) if style_cfg else 0.0
     raw_shear_x = max(-0.05, min(0.05, float(style_cfg.get("shear_x", 0.0)))) if style_cfg else 0.0
     raw_shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
@@ -1692,13 +1728,38 @@ def _trajectory_from_exemplar(
         if user_bucket:
             seq_user = _pick_best_exemplar_sequence(user_bucket, rng, trials=28, target_strokes=target_strokes)
 
+        # Generate model-predicted sequence if model is available to capture transfer learning (roundness, curves)
+        seq_model = None
+        if model is not None and hidden_dim is not None and char_correction > 0.0:
+            try:
+                style_payload = _parse_style_seed(style_seed)
+                style_id = _style_token_from_seed(style_seed)
+                if isinstance(style_payload, dict) and "weights" in style_payload:
+                    weights = style_payload["weights"]
+                    if isinstance(weights, list) and len(weights) == hidden_dim:
+                        import torch
+                        with torch.no_grad():
+                            model.style_embed.weight[style_id].copy_(
+                                torch.tensor(weights, dtype=torch.float32, device=model.style_embed.weight.device)
+                            )
+                char_id = _char_token(char, vocab_size)
+                device = next(model.parameters()).device
+                seq_len = _infer_sequence_len(char_id, metadata, rng)
+                pred_points = model.generate(char_id, style_id, seq_len, device)
+                if pred_points:
+                    seq_model = pred_points
+            except Exception as e:
+                print(f"[DEBUG] Failed to generate from model: {e}", flush=True)
+
+        strokes_m = _seq_to_strokes(seq_model) if seq_model else None
+
         seq = None
         if seq_user and seq_base and char_correction > 0.0:
             strokes_u = _seq_to_strokes(seq_user)
             strokes_b = _seq_to_strokes(seq_base)
             # Only morph when stroke counts match - mismatched counts produce garbled shapes
             if len(strokes_u) == len(strokes_b):
-                morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
+                morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m)
                 seq = _strokes_to_seq(morphed_strokes)
             else:
                 # Stroke counts differ: try to recover pen lifts from user data geometry,
@@ -1706,11 +1767,11 @@ def _trajectory_from_exemplar(
                 repaired_user = _infer_pen_lifts_from_geometry(seq_user, len(strokes_b))
                 strokes_u_repaired = _seq_to_strokes(repaired_user)
                 if len(strokes_u_repaired) == len(strokes_b):
-                    morphed_strokes = _morph_strokes(strokes_u_repaired, strokes_b, char_correction)
+                    morphed_strokes = _morph_strokes(strokes_u_repaired, strokes_b, char_correction, strokes_m)
                     seq = _strokes_to_seq(morphed_strokes)
                 else:
                     # Still can't match - morph using the unmatched-length morph logic
-                    morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
+                    morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m)
                     seq = _strokes_to_seq(morphed_strokes)
         elif seq_user:
             # User-only: try to recover pen lifts if the character should have multiple strokes
@@ -1753,8 +1814,8 @@ def _trajectory_from_exemplar(
             # Guard against accidental long "down" jumps; treat them as pen-up moves.
             if pen == "down" and (abs(dx) > 14.0 or abs(dy) > 14.0):
                 pen = "up"
-            width = int(round(max(0.2, min(1.2, float(row[3]))) * 4.0))
-            local.append((lx, ly, pen, max(1, min(4, width))))
+            width = int(round(max(0.2, min(1.5, float(row[3]) * width_scale_boosted)) * 4.0))
+            local.append((lx, ly, pen, max(1, min(5, width))))
 
         down_local = [(p[0], p[1]) for p in local if p[2] == "down"]
         if len(down_local) >= 6:
@@ -2098,6 +2159,8 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             random.Random(rng_seed ^ 0x9E3779B9),
             style_profile=style_profile if isinstance(style_profile, dict) else None,
             correction=correction,
+            model=model,
+            hidden_dim=_hidden_dim,
         )
         # エクゼンプラーベースの生成（基本データセット）は極めて字形が整っているため、
         # 厳しいスコアチェックで却下されて不安定なモデル予測にフォールバックするのを避けます。
@@ -2117,6 +2180,8 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
                     rng,
                     style_profile=style_profile if isinstance(style_profile, dict) else None,
                     correction=correction,
+                    model=model,
+                    hidden_dim=_hidden_dim,
                 )
             else:
                 generated = _trajectory_from_model(
