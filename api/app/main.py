@@ -49,6 +49,8 @@ from .security import create_access_token, hash_password, parse_access_token, ve
 from .settings import settings
 from .storage import get_storage
 from .tasks import run_preprocess_job, run_train_lora_job
+from . import analyze_scan
+
 
 WATERMARK_TEXT = "AI生成（アクセシビリティ支援）"
 HIRAGANA_TARGET = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
@@ -147,6 +149,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(analyze_scan.router)
+
 
 
 @app.on_event("startup")
@@ -2055,6 +2059,10 @@ async def upload_scan(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DatasetUploadResponse:
+    # Deactivate all legacy datasets for this user to avoid merging buggy segments in future LoRA adapters
+    db.query(Dataset).filter(Dataset.user_id == user.id, Dataset.active.is_(True)).update({"active": False})
+    db.commit()
+
     key = f"scans/u{user.id}/{uuid.uuid4().hex}-{file.filename}"
     payload = await file.read()
     storage = get_storage()
@@ -2396,12 +2404,6 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         return text_to_svg_english(text, WATERMARK_TEXT)
 
     def _learned_style_trajectory(text: str) -> list[dict]:
-        # The web editor sends one request per selectable character. Running
-        # the learned model for every single character is too slow and was the
-        # source of "choppy line" regressions, so single-character conversion
-        # stays on the fast, stable runtime dataset path.
-        if len([ch for ch in text if not ch.isspace()]) <= 1:
-            return []
         if style is None or style.disabled or style.status != "ready" or not style.adapter_key:
             return []
         try:
@@ -2430,17 +2432,8 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             bucket = direct_text_exemplars.get(ch)
             if not isinstance(bucket, list) or len(bucket) == 0:
                 return []
-        candidate = generate_trajectory(text, adapter_seed, settings.base_model_path)
-        # If the base model file does not exist, we are using the legacy generator fallback,
-        # which is clean but might not score high enough on model-specific filters.
-        from pathlib import Path
-        model_exists = settings.base_model_path and Path(settings.base_model_path).exists()
-        if not model_exists:
-            return candidate
-        min_score = max(34.0, len(text) * 9.0)
-        if _is_usable_trajectory(candidate, text) and _trajectory_candidate_score(candidate, text) >= min_score:
-            return candidate
-        return []
+        candidate = generate_trajectory(text, adapter_seed, settings.base_model_path, correction=0.20)
+        return candidate
 
     if settings.text_only_mode or (
         not use_model_for_text
@@ -2469,7 +2462,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             except Exception:
                 adapter_seed = ""
             if adapter_seed:
-                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
+                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
                 if _is_usable_trajectory(style_candidate, payload.text):
                     trajectory = style_candidate
         # 2) Runtime synthesis for hiragana if style path failed.
@@ -2496,7 +2489,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             except Exception:
                 adapter_seed = ""
             if adapter_seed:
-                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
+                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
                 if _is_usable_trajectory(style_candidate, payload.text):
                     trajectory = style_candidate
         # Skip base model fallback for Latin characters when there is no custom user style adapter,
@@ -2525,7 +2518,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         # user sample can still be rendered from the learned base dataset.
         has_user_coverage = _has_kana_coverage(payload.text, exemplars_text if isinstance(exemplars_text, dict) else None)
         trajectory = []
-        style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
+        style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
         if _is_usable_trajectory(style_candidate, payload.text):
             trajectory = style_candidate
         if not trajectory:

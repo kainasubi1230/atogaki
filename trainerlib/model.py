@@ -850,12 +850,47 @@ def _resample_sequence_rows(seq: list[list[float]], *, max_len: int) -> list[lis
     n = len(seq)
     if n <= max_len or max_len < 2:
         return list(seq)
-    out: list[list[float]] = []
+
+    # 1. Decode to absolute coordinates
+    abs_pts = []
+    x, y = 0.0, 0.0
+    for row in seq:
+        dx = float(row[0])
+        dy = float(row[1])
+        pen = float(row[2])
+        width = float(row[3])
+        x += dx
+        y += dy
+        abs_pts.append((x, y, pen, width))
+
+    # 2. Resample in absolute coordinate space (with linear interpolation)
+    out_pts = []
     for i in range(max_len):
-        idx = int(round(i * (n - 1) / (max_len - 1)))
-        row = seq[idx]
-        if isinstance(row, list) and len(row) >= 4:
-            out.append([float(row[0]), float(row[1]), float(row[2]), float(row[3])])
+        t = i * (n - 1) / (max_len - 1)
+        idx_low = int(t)
+        idx_high = idx_low + 1 if idx_low < n - 1 else idx_low
+        weight = t - idx_low
+        
+        row_low = abs_pts[idx_low]
+        row_high = abs_pts[idx_high]
+        
+        interp_x = row_low[0] * (1.0 - weight) + row_high[0] * weight
+        interp_y = row_low[1] * (1.0 - weight) + row_high[1] * weight
+        interp_pen = row_low[2] if weight < 0.5 else row_high[2]
+        interp_w = row_low[3] * (1.0 - weight) + row_high[3] * weight
+        
+        out_pts.append((interp_x, interp_y, interp_pen, interp_w))
+
+    # 3. Convert back to relative deltas
+    out: list[list[float]] = []
+    prev_x, prev_y = 0.0, 0.0
+    for i in range(max_len):
+        curr_x, curr_y, pen, width = out_pts[i]
+        dx = curr_x - prev_x
+        dy = curr_y - prev_y
+        out.append([dx, dy, pen, width])
+        prev_x, prev_y = curr_x, curr_y
+
     return out
 
 
@@ -1002,8 +1037,8 @@ def _smooth_trajectory_points(points: list[dict], *, passes: int = 2) -> list[di
                     + 2 * int(smoothed[i3].get("y", 0))
                     + int(smoothed[i4].get("y", 0))
                 ) / 9.0
-                smoothed[i2]["x"] = int(round(x))
-                smoothed[i2]["y"] = int(round(y))
+                smoothed[i2]["x"] = float(x)
+                smoothed[i2]["y"] = float(y)
     return smoothed
 
 
@@ -1014,7 +1049,7 @@ def _postprocess_strokes(points: list[dict]) -> list[dict]:
     cur: list[dict] = []
     for p in points:
         if p.get("pen_state") == "down":
-            cur.append({"x": int(p.get("x", 0)), "y": int(p.get("y", 0)), "width": int(p.get("width", 1))})
+            cur.append({"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "width": int(p.get("width", 1))})
         else:
             if cur:
                 strokes.append(cur)
@@ -1069,10 +1104,10 @@ def _postprocess_strokes(points: list[dict]) -> list[dict]:
     for stroke in merged:
         avg_w = max(1, min(4, int(round(sum(int(p.get("width", 1)) for p in stroke) / max(1, len(stroke))))))
         for p in stroke:
-            out.append({"x": int(p["x"]), "y": int(p["y"]), "t": t, "pen_state": "down", "width": avg_w})
+            out.append({"x": float(p["x"]), "y": float(p["y"]), "t": t, "pen_state": "down", "width": avg_w})
             t += 1
         end = stroke[-1]
-        out.append({"x": int(end["x"]), "y": int(end["y"]), "t": t, "pen_state": "up", "width": avg_w})
+        out.append({"x": float(end["x"]), "y": float(end["y"]), "t": t, "pen_state": "up", "width": avg_w})
         t += 1
     return out
 
@@ -1231,7 +1266,7 @@ def _trajectory_from_exemplar(
     vocab_size: int,
     rng: random.Random,
     style_profile: dict[str, Any] | None = None,
-    correction: float = 0.70,
+    correction: float = 0.45,
 ) -> list[dict]:
     char_exemplars = metadata.get("char_exemplars")
     if not isinstance(char_exemplars, dict):
@@ -1242,9 +1277,9 @@ def _trajectory_from_exemplar(
     t = 0
 
     style_cfg = style_profile if isinstance(style_profile, dict) else {}
-    raw_scale_x = max(0.82, min(1.18, float(style_cfg.get("scale_x", 1.0)))) if style_cfg else 1.0
-    raw_scale_y = max(0.82, min(1.18, float(style_cfg.get("scale_y", 1.0)))) if style_cfg else 1.0
-    width_scale = max(0.85, min(1.25, float(style_cfg.get("width_scale", 1.0)))) if style_cfg else 1.0
+    raw_scale_x = 1.0
+    raw_scale_y = 1.0
+    width_scale = 1.0
     raw_rot_bias = max(-3.0, min(3.0, float(style_cfg.get("rot_bias_deg", 0.0)))) if style_cfg else 0.0
     raw_shear_x = max(-0.05, min(0.05, float(style_cfg.get("shear_x", 0.0)))) if style_cfg else 0.0
     raw_shear_y = max(-0.03, min(0.03, float(style_cfg.get("shear_y", 0.0)))) if style_cfg else 0.0
@@ -1262,13 +1297,15 @@ def _trajectory_from_exemplar(
         c_shear_y = raw_shear_y
         c_jitter_scale = raw_jitter_scale
 
-        if char_correction > 0.0:
-            c_scale_x_bias = c_scale_x_bias * (1.0 - char_correction) + 1.0 * char_correction
-            c_scale_y_bias = c_scale_y_bias * (1.0 - char_correction) + 1.0 * char_correction
-            c_rot_bias_deg = c_rot_bias_deg * (1.0 - char_correction)
-            c_shear_x = c_shear_x * (1.0 - char_correction)
-            c_shear_y = c_shear_y * (1.0 - char_correction)
-            c_jitter_scale = c_jitter_scale * (1.0 - char_correction)
+        # The affine style transfer (rotation, shear, jitter) should be applied proportional to 
+        # the base model mix (char_correction). When char_correction is 0.0 (pure exemplar), 
+        # we do not apply any further affine transformations to the already skewed/styled user drawing.
+        c_scale_x_bias = c_scale_x_bias * char_correction + 1.0 * (1.0 - char_correction)
+        c_scale_y_bias = c_scale_y_bias * char_correction + 1.0 * (1.0 - char_correction)
+        c_rot_bias_deg = c_rot_bias_deg * char_correction
+        c_shear_x = c_shear_x * char_correction
+        c_shear_y = c_shear_y * char_correction
+        c_jitter_scale = c_jitter_scale * char_correction + 1.0 * (1.0 - char_correction)
 
         user_char_exemplars = metadata.get("user_char_exemplars")
         user_char_exemplars_text = metadata.get("user_char_exemplars_text")
@@ -1348,18 +1385,22 @@ def _trajectory_from_exemplar(
         span_x = max(1e-6, max_x - min_x)
         span_y = max(1e-6, max_y - min_y)
 
-        # Keep exemplar geometry and only normalize to a readable character box.
+        # Maintain character's original aspect ratio to preserve individual writing style (癖)
         if is_katakana:
-            target_w = (16.8 + rng.uniform(-0.2, 0.5)) * c_scale_x_bias
-            target_h = (28.6 + rng.uniform(-0.4, 0.4)) * c_scale_y_bias
+            base_target_w = (16.8 + rng.uniform(-0.2, 0.5)) * c_scale_x_bias
+            base_target_h = (28.6 + rng.uniform(-0.4, 0.4)) * c_scale_y_bias
         else:
-            target_w = (17.0 + rng.uniform(-0.6, 1.2)) * c_scale_x_bias
-            target_h = (29.0 + rng.uniform(-1.0, 1.0)) * c_scale_y_bias
-        scale_x = max(0.01, min(2.4, target_w / span_x))
-        scale_y = max(0.01, min(2.8, target_h / span_y))
+            base_target_w = (17.0 + rng.uniform(-0.6, 1.2)) * c_scale_x_bias
+            base_target_h = (29.0 + rng.uniform(-1.0, 1.0)) * c_scale_y_bias
+
+        # Scale uniformly to fit inside target box, preserving the raw aspect ratio
+        scale_val = min(base_target_w / span_x, base_target_h / span_y)
+        scale_x = max(0.01, min(2.4, scale_val))
+        scale_y = max(0.01, min(2.8, scale_val))
+        
         char_w = span_x * scale_x
         char_h = span_y * scale_y
-        base_y = y_offset + (target_h - char_h) * 0.5
+        base_y = y_offset + (base_target_h - char_h) * 0.5
 
         rot = (c_rot_bias_deg + rng.uniform(-1.2, 1.2) * (0.55 + 0.35 * c_jitter_scale)) * 3.141592653589793 / 180.0
         cr = cos(rot)
@@ -1397,8 +1438,8 @@ def _trajectory_from_exemplar(
         for tx, ty, pen, width in transformed:
             points.append(
                 {
-                    "x": int(round(tx)),
-                    "y": int(round(ty)),
+                    "x": float(tx),
+                    "y": float(ty),
                     "t": t,
                     "pen_state": pen,
                     "width": width,
@@ -1476,8 +1517,8 @@ def _trajectory_from_model(
 
                 points.append(
                     {
-                        "x": int(round(x)),
-                        "y": int(round(y)),
+                        "x": float(x),
+                        "y": float(y),
                         "t": t,
                         "pen_state": "down" if pen else "up",
                         "width": width,
@@ -1629,9 +1670,9 @@ def _is_plausible_trajectory(points: list[dict], text: str) -> bool:
     return True
 
 
-def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None, correction: float | None = 0.70) -> list[dict]:
+def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None, correction: float | None = 0.45) -> list[dict]:
     if correction is None:
-        correction = 0.70
+        correction = 0.45
     if not text:
         return []
     if base_model_path:

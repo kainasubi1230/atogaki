@@ -93,6 +93,26 @@ body {
   letter-spacing: 0.1em;
 }
 
+.splash-tech-stack {
+  margin-top: 2rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.65rem;
+  max-width: min(90vw, 720px);
+}
+
+.splash-tech-stack span {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(20, 32, 20, 0.12);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  backdrop-filter: blur(8px);
+}
+
 /* Common App Container */
 .app-container {
   flex: 1;

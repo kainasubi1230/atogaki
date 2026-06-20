@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from trainerlib.model import train_lora_adapter
+from trainerlib.model import train_lora_adapter, _trajectory_quality_score
 from trainerlib.preprocess import preprocess_scan
 from trainerlib.char_token import char_to_model_id
 
@@ -103,6 +103,11 @@ def _collect_user_samples_from_artifact(
         label = _label_from_segment(segment)
         if not label:
             continue
+        quality = segment.get("quality")
+        if not isinstance(quality, (int, float)):
+            quality = _trajectory_quality_score(segment.get("trajectory", []), label)
+        if quality < -120.0:
+            continue
         seq = _trajectory_to_sequence(segment.get("trajectory", []))
         if len(seq) < 8:
             continue
@@ -113,7 +118,7 @@ def _collect_user_samples_from_artifact(
                 "dataset_id": dataset_id,
                 "user_id": user_id,
                 "sequence": seq,
-                "meta": {"source": source, "char": label},
+                "meta": {"source": source, "char": label, "quality": round(float(quality), 4)},
             }
         )
     return out

@@ -455,7 +455,7 @@ function pathBoundsFromD(d: string): { minX: number; minY: number; maxX: number;
   return { minX, minY, maxX, maxY };
 }
 
-function parseHandwritingSvg(svg: string): ParsedHandwriting | null {
+function parseHandwritingSvg(svg: string, isJapanese: boolean): ParsedHandwriting | null {
   try {
     const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
     const root = doc.documentElement;
@@ -501,10 +501,19 @@ function parseHandwritingSvg(svg: string): ParsedHandwriting | null {
         maxY = 100;
       }
       const pad = 2;
-      const vbX = minX - pad;
-      const vbY = minY - pad;
-      const vbW = Math.max(8, maxX - minX + pad * 2);
-      const vbH = Math.max(8, maxY - minY + pad * 2);
+      let vbW = Math.max(8, maxX - minX + pad * 2);
+      let vbH = Math.max(8, maxY - minY + pad * 2);
+      let vbX = minX - pad;
+      let vbY = minY - pad;
+
+      if (isJapanese) {
+        const vbSize = Math.max(vbW, vbH);
+        vbX = minX - pad - (vbSize - vbW) / 2;
+        vbY = minY - pad - (vbSize - vbH) / 2;
+        vbW = vbSize;
+        vbH = vbSize;
+      }
+
       return {
         paths,
         viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`,
@@ -544,10 +553,19 @@ function parseHandwritingSvg(svg: string): ParsedHandwriting | null {
       maxY = 100;
     }
     const pad = 2;
-    const vbX = minX - pad;
-    const vbY = minY - pad;
-    const vbW = Math.max(8, maxX - minX + pad * 2);
-    const vbH = Math.max(8, maxY - minY + pad * 2);
+    let vbW = Math.max(8, maxX - minX + pad * 2);
+    let vbH = Math.max(8, maxY - minY + pad * 2);
+    let vbX = minX - pad;
+    let vbY = minY - pad;
+
+    if (isJapanese) {
+      const vbSize = Math.max(vbW, vbH);
+      vbX = minX - pad - (vbSize - vbW) / 2;
+      vbY = minY - pad - (vbSize - vbH) / 2;
+      vbW = vbSize;
+      vbH = vbSize;
+    }
+
     return {
       paths,
       viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`,
@@ -1332,7 +1350,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               continue;
             }
             if (isPunctuation(ch) && !useRuntimePunctuation) {
-              const targetH = Math.max(22, baseFont * 1.55);
+              const targetH = Math.max(22, baseFont * 1.75);
               let boxW = baseFont * 0.45;
               let boxH = baseFont * 0.45;
               let drawX = currentX + baseFont * 0.5;
@@ -1418,9 +1436,10 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               lastErrorDetail = "empty_svg";
               continue;
             }
-            const parsed = parseHandwritingSvg(body.svg);
+            const isJapanese = !isLatinChar(ch) && !isPunctuation(ch);
+            const parsed = parseHandwritingSvg(body.svg, isJapanese);
             const fallbackDims = parseSvgDimensions(body.svg);
-            const targetH = Math.max(22, baseFont * 1.55);
+            const targetH = Math.max(22, baseFont * 1.75);
             const refW = parsed?.width ?? fallbackDims?.width ?? baseFont;
             const refH = parsed?.height ?? fallbackDims?.height ?? baseFont;
             const ratio = refW / Math.max(1, refH);
