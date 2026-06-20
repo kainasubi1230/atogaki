@@ -2,7 +2,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "あとがき (仮)",
+  title: "あとがき",
   description: "デジタルな言葉に、人の筆跡という「温かさ」を宿す。"
 };
 
