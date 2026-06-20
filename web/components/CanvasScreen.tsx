@@ -461,7 +461,7 @@ function parseHandwritingSvg(svg: string, isJapanese: boolean): ParsedHandwritin
     const root = doc.documentElement;
     let pathEls = Array.from(root.querySelectorAll("path"));
     if (pathEls.length === 0) {
-      const fallbackEls: Array<{ d: string; strokeWidth: number }> = [];
+      const fallbackEls: Array<{ d: string; strokeWidth: number; strokeOpacity?: number }> = [];
       const pathRe = /<path\b[^>]*\bd=['"]([^'"]+)['"][^>]*>/gi;
       let m: RegExpExecArray | null;
       while ((m = pathRe.exec(svg)) !== null) {
@@ -469,8 +469,14 @@ function parseHandwritingSvg(svg: string, isJapanese: boolean): ParsedHandwritin
         const d = m[1] ?? "";
         const swMatch = full.match(/\bstroke-width=['"]([^'"]+)['"]/i);
         const sw = swMatch ? Number(swMatch[1]) : 1;
+        const soMatch = full.match(/\bstroke-opacity=['"]([^'"]+)['"]/i);
+        const so = soMatch ? Number(soMatch[1]) : undefined;
         if (d.trim()) {
-          fallbackEls.push({ d, strokeWidth: Number.isFinite(sw) ? sw : 1 });
+          fallbackEls.push({ 
+            d, 
+            strokeWidth: Number.isFinite(sw) ? sw : 1,
+            strokeOpacity: so !== undefined && Number.isFinite(so) ? so : undefined
+          });
         }
       }
       if (fallbackEls.length === 0) return null;
@@ -485,6 +491,7 @@ function parseHandwritingSvg(svg: string, isJapanese: boolean): ParsedHandwritin
           id: `pf_${idx}_${Math.random().toString(36).slice(2, 8)}`,
           d: it.d,
           strokeWidth: it.strokeWidth,
+          strokeOpacity: it.strokeOpacity,
         });
         const b = pathBoundsFromD(it.d);
         if (b) {
@@ -532,10 +539,12 @@ function parseHandwritingSvg(svg: string, isJapanese: boolean): ParsedHandwritin
       const d = el.getAttribute("d") ?? "";
       if (!d.trim()) return;
       const strokeW = Number(el.getAttribute("stroke-width") ?? "1");
+      const strokeO = el.getAttribute("stroke-opacity");
       paths.push({
         id: `p_${idx}_${Math.random().toString(36).slice(2, 8)}`,
         d,
         strokeWidth: Number.isFinite(strokeW) ? strokeW : 1,
+        strokeOpacity: strokeO ? Number(strokeO) : undefined,
       });
       const b = pathBoundsFromD(d);
       if (b) {
@@ -2412,6 +2421,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
                             fill="none"
                             stroke={item.color}
                             strokeWidth={p.strokeWidth}
+                            strokeOpacity={p.strokeOpacity}
                             vectorEffect="non-scaling-stroke"
                             strokeLinecap="round"
                             strokeLinejoin="round"

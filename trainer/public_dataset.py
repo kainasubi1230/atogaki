@@ -996,6 +996,8 @@ def _image_to_sequence(
     threshold: int,
     *,
     smooth_profile: str = "default",
+    foreground_is_dark: bool | None = None,
+    min_comp_len: int = 10,
 ) -> list[list[float]]:
     # image is expected to be uint8 grayscale.
     # Some datasets store ink as dark pixels, others as bright pixels.
@@ -1004,7 +1006,10 @@ def _image_to_sequence(
     bright_mask = image > threshold
     dark_count = int(dark_mask.sum())
     bright_count = int(bright_mask.sum())
-    mask = dark_mask if dark_count <= bright_count else bright_mask
+    if foreground_is_dark is not None:
+        mask = dark_mask if foreground_is_dark else bright_mask
+    else:
+        mask = dark_mask if dark_count <= bright_count else bright_mask
     if mask.ndim != 2:
         return []
 
@@ -1036,6 +1041,12 @@ def _image_to_sequence(
     components = _split_connected_components(mask)
     if not components:
         return []
+    
+    # Filter out tiny component noise (less than min_comp_len pixels)
+    components = [comp for comp in components if len(comp) >= min_comp_len]
+    if not components:
+        return []
+
     components.sort(key=lambda comp: (min(p[1] for p in comp), min(p[0] for p in comp)))
 
     paths: list[list[tuple[int, int]]] = []

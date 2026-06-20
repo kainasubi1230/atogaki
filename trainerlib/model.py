@@ -48,6 +48,65 @@ class TinyHandwritingModel(nn.Module if nn is not None else object):
         return self.decoder(h)
 
 
+class GRUHandwritingModel(nn.Module if nn is not None else object):
+    def __init__(self, vocab_size: int = 4096, hidden_dim: int = 128):
+        if nn is None:
+            return
+        super().__init__()
+        self.char_embed = nn.Embedding(vocab_size, hidden_dim)
+        self.style_embed = nn.Embedding(4096, hidden_dim)
+        self.gru = nn.GRU(input_size=hidden_dim * 2 + 4, hidden_size=hidden_dim, batch_first=True)
+        self.decoder = nn.Linear(hidden_dim, 4)
+
+    def forward(self, char_ids, style_ids, targets):
+        if nn is None:
+            raise RuntimeError("torch is not available")
+        if char_ids.ndim == 2:
+            if char_ids.shape[1] > 1:
+                char_ids = char_ids[:, 0]
+            else:
+                char_ids = char_ids.squeeze(1)
+        if style_ids.ndim == 2:
+            if style_ids.shape[1] > 1:
+                style_ids = style_ids[:, 0]
+            else:
+                style_ids = style_ids.squeeze(1)
+
+        batch_size, seq_len, _ = targets.shape
+        char_vec = self.char_embed(char_ids)
+        style_vec = self.style_embed(style_ids)
+        context = torch.cat([char_vec, style_vec], dim=-1).unsqueeze(1)
+        context = context.expand(-1, seq_len, -1)
+        
+        start_token = torch.zeros((batch_size, 1, 4), device=targets.device)
+        inputs = torch.cat([start_token, targets[:, :-1, :]], dim=1)
+        
+        gru_input = torch.cat([context, inputs], dim=-1)
+        output, _ = self.gru(gru_input)
+        pred = self.decoder(output)
+        return pred
+
+    def generate(self, char_id, style_id, seq_len, device):
+        self.eval()
+        with torch.no_grad():
+            char_ids = torch.tensor([char_id], dtype=torch.long, device=device)
+            style_ids = torch.tensor([style_id], dtype=torch.long, device=device)
+            char_vec = self.char_embed(char_ids)
+            style_vec = self.style_embed(style_ids)
+            context = torch.cat([char_vec, style_vec], dim=-1).unsqueeze(1)
+            
+            h = None
+            prev_point = torch.zeros((1, 1, 4), device=device)
+            generated = []
+            for _ in range(seq_len):
+                gru_input = torch.cat([context, prev_point], dim=-1)
+                output, h = self.gru(gru_input, h)
+                pred = self.decoder(output)
+                generated.append(pred.squeeze(0).squeeze(0).cpu().tolist())
+                prev_point = pred.detach()
+            return generated
+
+
 @dataclass
 class TrainResult:
     similarity_score: float
@@ -63,6 +122,22 @@ class EncodedSample:
 
 
 _MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int, dict[str, Any]]] = {}
+_CACHED_BASE_EXEMPLARS: dict[str, list[list[float]]] | None = None
+
+
+def _get_cached_base_exemplar(char: str) -> list[list[float]] | None:
+    global _CACHED_BASE_EXEMPLARS
+    if _CACHED_BASE_EXEMPLARS is None:
+        _CACHED_BASE_EXEMPLARS = {}
+        try:
+            path = Path("/app/storage/base_hiragana_katakana_exemplars.json")
+            if path.exists():
+                with path.open("r", encoding="utf-8") as f:
+                    _CACHED_BASE_EXEMPLARS = json.load(f)
+        except Exception:
+            pass
+    return _CACHED_BASE_EXEMPLARS.get(char)
+
 
 
 def _load_jsonl_dataset(path: str) -> list[dict]:
@@ -532,7 +607,7 @@ def train_base_model(
         return {"base_model_path": str(path), "status": "saved_stub", "device": "cpu"}
 
     if dataset_path is None or not Path(dataset_path).exists():
-        model = TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim)
+        model = GRUHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim)
         torch.save(model.state_dict(), path)
         return {
             "base_model_path": str(path),
@@ -543,7 +618,7 @@ def train_base_model(
     samples = _load_jsonl_dataset(dataset_path)
     encoded_samples = _encode_samples(samples, vocab_size)
     if not encoded_samples:
-        torch.save(TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).state_dict(), path)
+        torch.save(GRUHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).state_dict(), path)
         return {"base_model_path": str(path), "status": "saved_init_only", "reason": "dataset_empty"}
 
     device = _pick_device(device_preference)
@@ -555,7 +630,7 @@ def train_base_model(
             torch.set_num_interop_threads(min(cpu_threads, 8))
         except RuntimeError:
             pass
-    model = TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).to(device)
+    model = GRUHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     rng = random.Random(42)
@@ -566,7 +641,7 @@ def train_base_model(
         for i in range(0, len(encoded_samples), max(1, batch_size)):
             batch = encoded_samples[i : i + max(1, batch_size)]
             char_ids, style_ids, time_steps, targets, mask = _build_batch(batch, device)
-            pred = model(char_ids, style_ids, time_steps)
+            pred = model(char_ids, style_ids, targets)
             squared = F.mse_loss(pred, targets, reduction="none")
             loss = (squared * mask.unsqueeze(-1)).sum() / torch.clamp(mask.sum() * 4.0, min=1.0)
             optimizer.zero_grad(set_to_none=True)
@@ -674,7 +749,7 @@ def train_lora_adapter(
                         for idx in range(0, len(encoded), batch_size):
                             batch = encoded[idx : idx + batch_size]
                             char_ids, style_ids, time_steps, targets, mask = _build_batch(batch, device)
-                            pred = model(char_ids, style_ids, time_steps)
+                            pred = model(char_ids, style_ids, targets)
                             squared = F.mse_loss(pred, targets, reduction="none")
                             loss = (squared * mask.unsqueeze(-1)).sum() / torch.clamp(mask.sum() * 4.0, min=1.0)
                             optimizer.zero_grad(set_to_none=True)
@@ -760,7 +835,7 @@ def _char_token(char: str, vocab_size: int) -> int:
     return char_to_model_id(char, vocab_size)
 
 
-def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None, int, int, dict[str, Any]]:
+def _load_base_model(base_model_path: str) -> tuple[Any, int, int, dict[str, Any]]:
     if torch is None:
         return None, 4096, 128, {}
 
@@ -792,7 +867,7 @@ def _load_base_model(base_model_path: str) -> tuple[TinyHandwritingModel | None,
 
     vocab_size = int(metadata.get("vocab_size", 4096))
     hidden_dim = int(metadata.get("hidden_dim", 128))
-    model = TinyHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim)
+    model = GRUHandwritingModel(vocab_size=vocab_size, hidden_dim=hidden_dim)
     try:
         model.load_state_dict(state_dict, strict=False)
     except Exception:
@@ -843,6 +918,34 @@ def _is_latin_char(ch: str) -> bool:
     return ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 
+_STANDARD_STROKE_COUNTS = {
+    # Hiragana
+    "あ": 3, "い": 2, "う": 2, "え": 2, "お": 3,
+    "か": 3, "き": 4, "く": 1, "け": 3, "こ": 2,
+    "さ": 3, "し": 1, "す": 2, "せ": 3, "そ": 1,
+    "た": 4, "ち": 2, "つ": 1, "て": 1, "と": 2,
+    "な": 4, "に": 3, "ぬ": 2, "ね": 2, "の": 1,
+    "は": 3, "ひ": 1, "ふ": 4, "へ": 1, "ほ": 4,
+    "ま": 3, "み": 2, "む": 3, "め": 2, "も": 3,
+    "や": 3, "ゆ": 2, "よ": 2, "ら": 2, "り": 2,
+    "る": 1, "れ": 2, "ろ": 1, "わ": 2, "を": 3,
+    "ん": 1,
+
+    # Katakana
+    "ア": 2, "イ": 2, "ウ": 3, "エ": 3, "オ": 3,
+    "カ": 2, "キ": 3, "ク": 2, "ケ": 3, "コ": 2,
+    "サ": 3, "シ": 3, "ス": 2, "セ": 2, "ソ": 2,
+    "タ": 3, "チ": 3, "ツ": 3, "テ": 3, "ト": 2,
+    "ナ": 2, "ニ": 2, "ヌ": 2, "ネ": 4, "ノ": 1,
+    "ハ": 2, "ヒ": 2, "フ": 1, "ヘ": 1, "ホ": 4,
+    "マ": 2, "ミ": 3, "ム": 2, "メ": 2, "モ": 3,
+    "ヤ": 2, "ユ": 2, "ヨ": 3, "ラ": 2, "リ": 2,
+    "ル": 2, "レ": 1, "ロ": 3, "ワ": 2, "ヲ": 3,
+    "ン": 2,
+}
+
+
+
 
 def _resample_sequence_rows(seq: list[list[float]], *, max_len: int) -> list[list[float]]:
     if not isinstance(seq, list):
@@ -865,6 +968,7 @@ def _resample_sequence_rows(seq: list[list[float]], *, max_len: int) -> list[lis
 
     # 2. Resample in absolute coordinate space (with linear interpolation)
     out_pts = []
+    prev_t = 0.0
     for i in range(max_len):
         t = i * (n - 1) / (max_len - 1)
         idx_low = int(t)
@@ -876,10 +980,29 @@ def _resample_sequence_rows(seq: list[list[float]], *, max_len: int) -> list[lis
         
         interp_x = row_low[0] * (1.0 - weight) + row_high[0] * weight
         interp_y = row_low[1] * (1.0 - weight) + row_high[1] * weight
-        interp_pen = row_low[2] if weight < 0.5 else row_high[2]
+        
+        # Check if there is any pen-up (pen < 0.5) in the original sequence in the interval spanned by this step
+        has_penup = False
+        if i > 0:
+            start_idx = max(0, int(prev_t))
+            end_idx = min(n, int(t) + 1)
+            for idx in range(start_idx, end_idx):
+                if abs_pts[idx][2] < 0.5:
+                    has_penup = True
+                    break
+        else:
+            if abs_pts[0][2] < 0.5:
+                has_penup = True
+
+        if has_penup:
+            interp_pen = 0.0
+        else:
+            interp_pen = row_low[2] if weight < 0.5 else row_high[2]
+            
         interp_w = row_low[3] * (1.0 - weight) + row_high[3] * weight
         
         out_pts.append((interp_x, interp_y, interp_pen, interp_w))
+        prev_t = t
 
     # 3. Convert back to relative deltas
     out: list[list[float]] = []
@@ -967,7 +1090,9 @@ def _sequence_quality_score(seq: list[list[float]]) -> float:
     )
 
 
-def _pick_best_exemplar_sequence(bucket: list[Any], rng: random.Random, *, trials: int = 10) -> list[list[float]] | None:
+def _pick_best_exemplar_sequence(
+    bucket: list[Any], rng: random.Random, *, trials: int = 10, target_strokes: int | None = None
+) -> list[list[float]] | None:
     if not isinstance(bucket, list) or not bucket:
         return None
     count = len(bucket)
@@ -978,8 +1103,7 @@ def _pick_best_exemplar_sequence(bucket: list[Any], rng: random.Random, *, trial
     else:
         candidate_indexes = sorted(rng.sample(range(count), k=max_trials))
 
-    best_seq: list[list[float]] | None = None
-    best_score = float("-inf")
+    scored_candidates = []
     for idx in candidate_indexes:
         raw = bucket[idx]
         if not isinstance(raw, list):
@@ -988,11 +1112,33 @@ def _pick_best_exemplar_sequence(bucket: list[Any], rng: random.Random, *, trial
         for row in raw:
             if isinstance(row, list) and len(row) >= 4:
                 seq.append([float(row[0]), float(row[1]), float(row[2]), float(row[3])])
+        if not seq:
+            continue
         score = _sequence_quality_score(seq)
-        if score > best_score:
-            best_score = score
-            best_seq = seq
-    return best_seq
+        
+        # Calculate stroke count compatibility
+        strokes = _seq_to_strokes(seq)
+        num_strokes = len(strokes)
+        
+        if target_strokes is not None:
+            if num_strokes == target_strokes:
+                category = 0  # Perfect match
+            elif num_strokes < target_strokes:
+                category = 1  # Can be repaired/split
+            else:
+                category = 2  # Too many strokes
+        else:
+            category = 0
+            
+        scored_candidates.append((category, score, seq))
+        
+    if not scored_candidates:
+        return None
+        
+    # Sort: first by category (0 is best), then by quality score descending
+    scored_candidates.sort(key=lambda x: (x[0], -x[1]))
+    return scored_candidates[0][2]
+
 
 
 def _smooth_trajectory_points(points: list[dict], *, passes: int = 2) -> list[dict]:
@@ -1023,22 +1169,56 @@ def _smooth_trajectory_points(points: list[dict], *, passes: int = 2) -> list[di
                 i2 = run[pos]
                 i3 = run[pos + 1]
                 i4 = run[pos + 2]
+                
+                # 折れ曲がり（角）の検出
+                cx = float(smoothed[i2].get("x", 0))
+                cy = float(smoothed[i2].get("y", 0))
+                px = float(smoothed[i1].get("x", 0))
+                py = float(smoothed[i1].get("y", 0))
+                nx = float(smoothed[i3].get("x", 0))
+                ny = float(smoothed[i3].get("y", 0))
+                
+                v1x, v1y = cx - px, cy - py
+                v2x, v2y = nx - cx, ny - cy
+                n1 = (v1x * v1x + v1y * v1y) ** 0.5
+                n2 = (v2x * v2x + v2y * v2y) ** 0.5
+                
+                is_corner = False
+                if n1 > 0.4 and n2 > 0.4:
+                    cos_val = (v1x * v2x + v1y * v2y) / (n1 * n2)
+                    # 角度変化が約60度以上 (cos < 0.5) を角として保護
+                    if cos_val < 0.5:
+                        is_corner = True
+                
+                if is_corner:
+                    # 角の場合は座標のスムージングをスキップして鋭さを残す
+                    continue
+
                 x = (
-                    int(smoothed[i0].get("x", 0))
-                    + 2 * int(smoothed[i1].get("x", 0))
-                    + 3 * int(smoothed[i2].get("x", 0))
-                    + 2 * int(smoothed[i3].get("x", 0))
-                    + int(smoothed[i4].get("x", 0))
+                    float(smoothed[i0].get("x", 0))
+                    + 2 * float(smoothed[i1].get("x", 0))
+                    + 3 * float(smoothed[i2].get("x", 0))
+                    + 2 * float(smoothed[i3].get("x", 0))
+                    + float(smoothed[i4].get("x", 0))
                 ) / 9.0
                 y = (
-                    int(smoothed[i0].get("y", 0))
-                    + 2 * int(smoothed[i1].get("y", 0))
-                    + 3 * int(smoothed[i2].get("y", 0))
-                    + 2 * int(smoothed[i3].get("y", 0))
-                    + int(smoothed[i4].get("y", 0))
+                    float(smoothed[i0].get("y", 0))
+                    + 2 * float(smoothed[i1].get("y", 0))
+                    + 3 * float(smoothed[i2].get("y", 0))
+                    + 2 * float(smoothed[i3].get("y", 0))
+                    + float(smoothed[i4].get("y", 0))
                 ) / 9.0
+                w = (
+                    float(smoothed[i0].get("width", 1))
+                    + 2 * float(smoothed[i1].get("width", 1))
+                    + 3 * float(smoothed[i2].get("width", 1))
+                    + 2 * float(smoothed[i3].get("width", 1))
+                    + float(smoothed[i4].get("width", 1))
+                ) / 9.0
+                
                 smoothed[i2]["x"] = float(x)
                 smoothed[i2]["y"] = float(y)
+                smoothed[i2]["width"] = float(w)
     return smoothed
 
 
@@ -1049,7 +1229,7 @@ def _postprocess_strokes(points: list[dict]) -> list[dict]:
     cur: list[dict] = []
     for p in points:
         if p.get("pen_state") == "down":
-            cur.append({"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "width": int(p.get("width", 1))})
+            cur.append({"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "width": float(p.get("width", 1.0))})
         else:
             if cur:
                 strokes.append(cur)
@@ -1079,37 +1259,120 @@ def _postprocess_strokes(points: list[dict]) -> list[dict]:
             min_y = min(min_y, stroke[i]["y"])
             max_y = max(max_y, stroke[i]["y"])
         span = float(max(max_x - min_x, max_y - min_y))
-        if path_len < 1.8 and span < 2.0:
+        if path_len < 0.4 and span < 0.4:
             continue
         cleaned.append(stroke)
 
     if not cleaned:
         cleaned = strokes
 
-    merged: list[list[dict]] = []
-    for stroke in cleaned:
-        if not merged:
-            merged.append(stroke)
-            continue
-        prev = merged[-1]
-        dx = float(stroke[0]["x"] - prev[-1]["x"])
-        dy = float(stroke[0]["y"] - prev[-1]["y"])
-        if hypot(dx, dy) <= 2.2:
-            prev.extend(stroke)
-        else:
-            merged.append(stroke)
+    merged = cleaned
 
     out: list[dict] = []
     t = 0
     for stroke in merged:
-        avg_w = max(1, min(4, int(round(sum(int(p.get("width", 1)) for p in stroke) / max(1, len(stroke))))))
         for p in stroke:
-            out.append({"x": float(p["x"]), "y": float(p["y"]), "t": t, "pen_state": "down", "width": avg_w})
+            out.append({"x": float(p["x"]), "y": float(p["y"]), "t": t, "pen_state": "down", "width": float(p.get("width", 1.0))})
             t += 1
         end = stroke[-1]
-        out.append({"x": float(end["x"]), "y": float(end["y"]), "t": t, "pen_state": "up", "width": avg_w})
+        out.append({"x": float(end["x"]), "y": float(end["y"]), "t": t, "pen_state": "up", "width": float(end.get("width", 1.0))})
         t += 1
     return out
+
+
+def _infer_pen_lifts_from_geometry(seq: list[list[float]], expected_strokes: int) -> list[list[float]]:
+    """Attempt to insert pen-lift events into a seq that has fewer strokes than expected.
+    Detects major direction changes (e.g. leftward 'chon' transitioning to downward body) as pen lift points.
+    Uses cumulative displacement to find where dominant axis switches.
+    Only used as a fallback when seq has fewer strokes than expected."""
+    if expected_strokes <= 1:
+        return seq
+
+    # Decode absolute positions and collect pen-down moves
+    pen_pts = []  # (row_idx, lx, ly, dx, dy)
+    lx, ly = 0.0, 0.0
+    for i, row in enumerate(seq):
+        if len(row) < 4:
+            continue
+        dx = float(row[0]) * 20.0
+        dy = float(row[1]) * 20.0
+        lx += dx
+        ly += dy
+        pen = float(row[2]) > 0.5
+        if pen:
+            pen_pts.append((i, lx, ly, dx, dy))
+
+    if len(pen_pts) < 10:
+        return seq
+
+    # Segment analysis: find the best split point using cumulative displacement
+    # For each split point, compute the "directional purity" of each half
+    total = len(pen_pts)
+    needed_lifts = expected_strokes - 1
+
+    def _axis_score(pts):
+        """Higher score = more axis-aligned movement (less diagonal/random)"""
+        cum_x = sum(abs(p[3]) for p in pts)
+        cum_y = sum(abs(p[4]) for p in pts)
+        total_disp = max(cum_x + cum_y, 1e-6)
+        # Score is how dominant one axis is vs the other
+        return max(cum_x, cum_y) / total_disp
+
+    best_splits = []
+    # Try each possible split point, score by how different the two halves' directions are
+    min_seg = max(4, total // (expected_strokes + 2))
+    for split in range(min_seg, total - min_seg):
+        left = pen_pts[:split]
+        right = pen_pts[split:]
+        # Direction of each half
+        lx_sum = sum(p[3] for p in left)
+        ly_sum = sum(p[4] for p in left)
+        rx_sum = sum(p[3] for p in right)
+        ry_sum = sum(p[4] for p in right)
+        len_l = (lx_sum**2 + ly_sum**2)**0.5
+        len_r = (rx_sum**2 + ry_sum**2)**0.5
+        if len_l < 1e-6 or len_r < 1e-6:
+            continue
+        dot = (lx_sum * rx_sum + ly_sum * ry_sum) / (len_l * len_r)
+        # Score: negative dot = big direction change = good split point
+        score = -dot
+        row_idx = pen_pts[split][0]
+        best_splits.append((score, row_idx))
+
+    if not best_splits:
+        return seq
+
+    best_splits.sort(key=lambda x: -x[0])
+    # Only use if direction actually changes (score > 0.3 means >60 degree turn)
+    valid = [(score, idx) for score, idx in best_splits if score > 0.3]
+    if len(valid) < needed_lifts:
+        return seq
+
+    # Pick needed_lifts splits, spread them out by ensuring min separation
+    lift_row_indices = set()
+    last_idx = -1
+    min_sep = max(3, total // (expected_strokes + 1))
+    for score, idx in valid:
+        if len(lift_row_indices) >= needed_lifts:
+            break
+        # Check minimum separation from already-chosen lifts
+        too_close = any(abs(idx - li) < min_sep for li in lift_row_indices)
+        if not too_close:
+            lift_row_indices.add(idx)
+            last_idx = idx
+
+    if len(lift_row_indices) < needed_lifts:
+        return seq
+
+    lift_row_indices = sorted(lift_row_indices)
+
+    # Rebuild seq inserting pen-up transitions at lift points
+    new_seq = []
+    for i, row in enumerate(seq):
+        if i in lift_row_indices:
+            new_seq.append([0.0, 0.0, 0.0, float(row[3]) if len(row) >= 4 else 1.0])
+        new_seq.append(row)
+    return new_seq
 
 
 def _seq_to_strokes(seq):
@@ -1227,33 +1490,120 @@ def _align_character_bbox(strokes_to_align, reference_strokes):
     return aligned_strokes
 
 
+def _blend_widths(strokes_dest, strokes_src, corr_width):
+    src_widths = []
+    for stroke in strokes_src:
+        for p in stroke:
+            if len(p) >= 3:
+                src_widths.append(p[2])
+    if not src_widths:
+        return strokes_dest
+    
+    dest_strokes_new = []
+    flat_idx = 0
+    total_dest = sum(len(s) for s in strokes_dest)
+    if total_dest <= 0:
+        return strokes_dest
+        
+    for stroke in strokes_dest:
+        new_stroke = []
+        for x, y, dw in stroke:
+            if total_dest > 1:
+                t = float(flat_idx) / float(total_dest - 1)
+            else:
+                t = 0.0
+            src_idx_f = t * (len(src_widths) - 1)
+            src_idx_0 = int(src_idx_f)
+            src_idx_1 = min(src_idx_0 + 1, len(src_widths) - 1)
+            alpha = src_idx_f - src_idx_0
+            sw = src_widths[src_idx_0] * (1.0 - alpha) + src_widths[src_idx_1] * alpha
+            
+            mw = sw * (1.0 - corr_width) + dw * corr_width
+            new_stroke.append((x, y, mw))
+            flat_idx += 1
+        dest_strokes_new.append(new_stroke)
+    return dest_strokes_new
+
+
 def _morph_strokes(strokes_u, strokes_b, correction):
     if not strokes_u:
         return strokes_b
     if not strokes_b:
         return strokes_u
     
+    corr_shape = min(1.0, max(0.0, correction * 0.8 + 0.38))
+    corr_centroid = min(1.0, max(0.0, correction * 0.6))
+    corr_width = min(1.0, max(0.0, correction * 0.5))
+
     if len(strokes_u) != len(strokes_b):
         if correction > 0.5:
-            return _align_character_bbox(strokes_b, strokes_u)
+            strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
+            return _blend_widths(strokes_b_aligned, strokes_u, corr_width)
         return strokes_u
 
     strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
+    n = len(strokes_u)
+
+    centroids_u = []
+    for s in strokes_u:
+        cx = sum(p[0] for p in s) / len(s)
+        cy = sum(p[1] for p in s) / len(s)
+        centroids_u.append((cx, cy))
+
+    centroids_b = []
+    for s in strokes_b_aligned:
+        cx = sum(p[0] for p in s) / len(s)
+        cy = sum(p[1] for p in s) / len(s)
+        centroids_b.append((cx, cy))
+
+    import itertools
+    best_perm = None
+    min_total_dist = 1e9
+
+    for perm in itertools.permutations(range(n)):
+        total_dist = 0.0
+        for i in range(n):
+            ux, uy = centroids_u[i]
+            bx, by = centroids_b[perm[i]]
+            total_dist += (ux - bx) ** 2 + (uy - by) ** 2
+        if total_dist < min_total_dist:
+            min_total_dist = total_dist
+            best_perm = perm
+
+    strokes_b_aligned_sorted = [strokes_b_aligned[best_perm[i]] for i in range(n)]
+    strokes_u_sorted = strokes_u
+
     morphed = []
-    for i in range(len(strokes_u)):
-        su = strokes_u[i]
-        sb = strokes_b_aligned[i]
+    for i in range(n):
+        su = strokes_u_sorted[i]
+        sb = strokes_b_aligned_sorted[i]
         target_len = max(len(su), len(sb))
         ru = _resample_stroke(su, target_len)
         rb = _resample_stroke(sb, target_len)
+        
+        c_ux = sum(p[0] for p in ru) / target_len
+        c_uy = sum(p[1] for p in ru) / target_len
+        c_bx = sum(p[0] for p in rb) / target_len
+        c_by = sum(p[1] for p in rb) / target_len
+        
+        cx_m = c_ux * (1.0 - corr_centroid) + c_bx * corr_centroid
+        cy_m = c_uy * (1.0 - corr_centroid) + c_by * corr_centroid
         
         m_stroke = []
         for j in range(target_len):
             ux, uy, uw = ru[j]
             bx, by, bw = rb[j]
-            mx = ux * (1.0 - correction) + bx * correction
-            my = uy * (1.0 - correction) + by * correction
-            mw = uw * (1.0 - correction) + bw * correction
+            
+            ox_u, oy_u = ux - c_ux, uy - c_uy
+            ox_b, oy_b = bx - c_bx, by - c_by
+            
+            ox_m = ox_u * (1.0 - corr_shape) + ox_b * corr_shape
+            oy_m = oy_u * (1.0 - corr_shape) + oy_b * corr_shape
+            
+            mx = cx_m + ox_m
+            my = cy_m + oy_m
+            mw = uw * (1.0 - corr_width) + bw * corr_width
+            
             m_stroke.append((mx, my, mw))
         morphed.append(m_stroke)
     return morphed
@@ -1320,27 +1670,62 @@ def _trajectory_from_exemplar(
             user_bucket = user_char_exemplars.get(str(char_id))
 
         base_bucket = None
-        if isinstance(base_char_exemplars_text, dict):
-            base_bucket = base_char_exemplars_text.get(char)
-        if base_bucket is None and isinstance(base_char_exemplars, dict):
-            char_id = _char_token(char, vocab_size)
-            base_bucket = base_char_exemplars.get(str(char_id))
+        base_seq = _get_cached_base_exemplar(char)
+        if base_seq:
+            base_bucket = [base_seq]
+        else:
+            if isinstance(base_char_exemplars_text, dict):
+                base_bucket = base_char_exemplars_text.get(char)
+            if base_bucket is None and isinstance(base_char_exemplars, dict):
+                char_id = _char_token(char, vocab_size)
+                base_bucket = base_char_exemplars.get(str(char_id))
 
-        seq_user = None
-        if user_bucket:
-            seq_user = _pick_best_exemplar_sequence(user_bucket, rng, trials=28)
         seq_base = None
         if base_bucket:
             seq_base = _pick_best_exemplar_sequence(base_bucket, rng, trials=28)
+
+        target_strokes = _STANDARD_STROKE_COUNTS.get(char)
+        if target_strokes is None and seq_base:
+            target_strokes = len(_seq_to_strokes(seq_base))
+
+        seq_user = None
+        if user_bucket:
+            seq_user = _pick_best_exemplar_sequence(user_bucket, rng, trials=28, target_strokes=target_strokes)
 
         seq = None
         if seq_user and seq_base and char_correction > 0.0:
             strokes_u = _seq_to_strokes(seq_user)
             strokes_b = _seq_to_strokes(seq_base)
-            morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
-            seq = _strokes_to_seq(morphed_strokes)
+            # Only morph when stroke counts match - mismatched counts produce garbled shapes
+            if len(strokes_u) == len(strokes_b):
+                morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
+                seq = _strokes_to_seq(morphed_strokes)
+            else:
+                # Stroke counts differ: try to recover pen lifts from user data geometry,
+                # then morph if stroke counts now match
+                repaired_user = _infer_pen_lifts_from_geometry(seq_user, len(strokes_b))
+                strokes_u_repaired = _seq_to_strokes(repaired_user)
+                if len(strokes_u_repaired) == len(strokes_b):
+                    morphed_strokes = _morph_strokes(strokes_u_repaired, strokes_b, char_correction)
+                    seq = _strokes_to_seq(morphed_strokes)
+                else:
+                    # Still can't match - morph using the unmatched-length morph logic
+                    morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction)
+                    seq = _strokes_to_seq(morphed_strokes)
         elif seq_user:
-            seq = seq_user
+            # User-only: try to recover pen lifts if the character should have multiple strokes
+            strokes_u = _seq_to_strokes(seq_user)
+            expected_strokes = _STANDARD_STROKE_COUNTS.get(char, 2)
+            if len(strokes_u) < expected_strokes and (_is_hiragana_char(char) or _is_katakana_char(char)):
+                # For fewer-stroke user data on hiragana/katakana, attempt geometric pen lift inference
+                repaired = _infer_pen_lifts_from_geometry(seq_user, expected_strokes)
+                strokes_repaired = _seq_to_strokes(repaired)
+                if len(strokes_repaired) > len(strokes_u):
+                    seq = repaired
+                else:
+                    seq = seq_user
+            else:
+                seq = seq_user
         else:
             seq = seq_base
 
@@ -1449,8 +1834,8 @@ def _trajectory_from_exemplar(
 
         x_offset += char_w + (rng.uniform(4.8, 6.2) if is_katakana else rng.uniform(5.0, 8.0))
         y_offset += rng.uniform(-0.25, 0.25)
-    max_correction = max(max(0.92, correction) if _is_latin_char(ch) else correction for ch in text) if text else correction
-    smooth_passes = 3 + int(max_correction * 5)
+    # Keep smoothing minimal to avoid destroying small stroke features (e.g. the dot on 'う')
+    smooth_passes = 2
     smoothed = _smooth_trajectory_points(points, passes=smooth_passes)
     return _postprocess_strokes(smoothed)
 
@@ -1489,21 +1874,19 @@ def _trajectory_from_model(
     t = 0
 
     with torch.no_grad():
+        device = next(model.parameters()).device
         for char in text:
             char_id = _char_token(char, vocab_size)
             seq_len = _infer_sequence_len(char_id, metadata, rng)
 
-            char_ids = torch.full((1, seq_len), char_id, dtype=torch.long)
-            style_ids = torch.tensor([style_id], dtype=torch.long)
-            time_steps = torch.linspace(0.0, 1.0, steps=seq_len).unsqueeze(0)
-            pred = model(char_ids, style_ids, time_steps)[0].cpu()
+            pred = model.generate(char_id, style_id, seq_len, device)
 
             for i in range(seq_len):
                 row = pred[i]
                 # Training target stores normalized deltas: dx/20, dy/20.
                 # Decode with the inverse scale to preserve learned geometry.
-                dx = float(row[0]) * 20.0 + rng.uniform(-0.35, 0.35)
-                dy = float(row[1]) * 20.0 + rng.uniform(-0.35, 0.35)
+                dx = float(row[0]) * 20.0
+                dy = float(row[1]) * 20.0
                 x += max(-8.0, min(8.0, dx))
                 y += max(-8.0, min(8.0, dy))
 
@@ -1529,7 +1912,9 @@ def _trajectory_from_model(
             x += 10.0 + rng.uniform(1.0, 3.0)
             y += rng.uniform(-0.8, 0.8)
 
-    return points
+    print(f"[DEBUG] _trajectory_from_model text={text} points_len={len(points)}", flush=True)
+    smoothed = _smooth_trajectory_points(points, passes=5)
+    return _postprocess_strokes(smoothed)
 
 
 def _trajectory_quality_score(points: list[dict], text: str) -> float:
@@ -1670,9 +2055,9 @@ def _is_plausible_trajectory(points: list[dict], text: str) -> bool:
     return True
 
 
-def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None, correction: float | None = 0.45) -> list[dict]:
+def generate_trajectory(text: str, style_seed: str, base_model_path: str | None = None, correction: float | None = 0.55) -> list[dict]:
     if correction is None:
-        correction = 0.45
+        correction = 0.55
     if not text:
         return []
     if base_model_path:
@@ -1700,13 +2085,6 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
         run_metadata["base_char_exemplars"] = metadata.get("char_exemplars") if isinstance(metadata, dict) else None
         run_metadata["base_char_exemplars_text"] = metadata.get("char_exemplars_text") if isinstance(metadata, dict) else None
         
-        if not _has_exemplar_for_text(
-            text,
-            vocab_size=vocab_size,
-            char_exemplars=run_metadata.get("char_exemplars") if isinstance(run_metadata, dict) else None,
-            text_exemplars=run_metadata.get("char_exemplars_text") if isinstance(run_metadata, dict) else None,
-        ):
-            return []
         style_profile = style_payload.get("style_profile") if isinstance(style_payload, dict) else None
         rng_seed = stable_int_token(f"{style_seed}:{text}:hybrid", 2**31 - 1)
         rng = random.Random(rng_seed)
@@ -1721,7 +2099,9 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             style_profile=style_profile if isinstance(style_profile, dict) else None,
             correction=correction,
         )
-        if preferred and _trajectory_quality_score(preferred, text) > float("-inf"):
+        # エクゼンプラーベースの生成（基本データセット）は極めて字形が整っているため、
+        # 厳しいスコアチェックで却下されて不安定なモデル予測にフォールバックするのを避けます。
+        if preferred and len(preferred) >= max(6, len(text) * 4):
             return preferred
 
         best: list[dict] | None = None
@@ -1748,9 +2128,11 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             if generated and _is_plausible_trajectory(generated, text):
                 return generated
             score = _trajectory_quality_score(generated, text)
+            print(f"[DEBUG] attempt={attempt} generated_len={len(generated)} score={score} best_score={best_score} is_plausible={_is_plausible_trajectory(generated, text) if generated else False}", flush=True)
             if score > best_score:
                 best_score = score
                 best = generated
+        print(f"[DEBUG] generate_trajectory finished best_len={len(best) if best is not None else 'None'} best_score={best_score}", flush=True)
         if best:
             return best
         return []

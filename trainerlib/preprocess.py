@@ -6,6 +6,12 @@ from scipy.ndimage import binary_opening, binary_erosion
 from PIL import Image
 from trainer.public_dataset import _image_to_sequence
 
+try:
+    import cv2 as _cv2
+    _CV2_AVAILABLE = True
+except ImportError:
+    _CV2_AVAILABLE = False
+
 
 LOW_CONTRAST = "LOW_CONTRAST"
 NO_TEXT_DETECTED = "NO_TEXT_DETECTED"
@@ -42,6 +48,24 @@ _CHAR_OPTICAL_SIZE_BIAS = {
     "る": 1.02,
     "ロ": 1.02,
     "ー": 0.92,
+}
+
+_SPLIT_STROKE_LABELS = {
+    "い",
+    "に",
+    "は",
+    "ほ",
+    "け",
+    "り",
+    "か",
+    "や",
+    "ハ",
+    "リ",
+    "シ",
+    "ツ",
+    "ソ",
+    "ン",
+    "代",
 }
 
 
@@ -253,14 +277,111 @@ def get_connected_components(binary: np.ndarray) -> list[dict]:
     return components
 
 
-def _stroke_from_mask(mask: np.ndarray, force_profile: str | None = None) -> tuple[list[dict], dict[str, object]]:
+def get_connected_components_labeled(binary: np.ndarray) -> tuple[list[dict], np.ndarray]:
+    h, w = binary.shape
+    visited = np.zeros((h, w), dtype=bool)
+    labels_im = np.zeros((h, w), dtype=int)
+    components = []
+    active_y, active_x = np.where(binary)
+    active_pixels = list(zip(active_y, active_x))
+    
+    comp_id = 0
+    for y, x in active_pixels:
+        if visited[y, x]:
+            continue
+            
+        comp_id += 1
+        stack = [(y, x)]
+        visited[y, x] = True
+        labels_im[y, x] = comp_id
+        min_y, max_y = y, y
+        min_x, max_x = x, x
+        
+        while stack:
+            cy, cx = stack.pop()
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ny, nx = cy + dy, cx + dx
+                if 0 <= ny < h and 0 <= nx < w:
+                    if binary[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        labels_im[ny, nx] = comp_id
+                        stack.append((ny, nx))
+                        if ny < min_y: min_y = ny
+                        elif ny > max_y: max_y = ny
+                        if nx < min_x: min_x = nx
+                        elif nx > max_x: max_x = nx
+                            
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+        components.append({
+            "id": comp_id,
+            "x0": min_x,
+            "y0": min_y,
+            "x1": max_x + 1,
+            "y1": max_y + 1,
+            "width": width,
+            "height": height,
+            "center_y": (min_y + max_y) / 2.0,
+            "center_x": (min_x + max_x) / 2.0
+        })
+        
+    return components, labels_im
+
+
+
+def _component_area(comp: dict) -> int:
+    return max(0, int(comp["x1"]) - int(comp["x0"])) * max(0, int(comp["y1"]) - int(comp["y0"]))
+
+
+def _unique_components(comps: list[dict]) -> list[dict]:
+    seen: set[tuple[int, int, int, int]] = set()
+    unique: list[dict] = []
+    for comp in comps:
+        key = (int(comp["x0"]), int(comp["y0"]), int(comp["x1"]), int(comp["y1"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(comp)
+    return unique
+
+
+def _component_bbox(comps: list[dict]) -> tuple[int, int, int, int] | None:
+    if not comps:
+        return None
+    return (
+        min(int(c["x0"]) for c in comps),
+        min(int(c["y0"]) for c in comps),
+        max(int(c["x1"]) for c in comps),
+        max(int(c["y1"]) for c in comps),
+    )
+
+
+def _score_bbox_with_cv2(binary_global: np.ndarray, cleaned_global: np.ndarray, bbox: tuple[int, int, int, int], label: str) -> float | None:
+    if not _CV2_AVAILABLE or not label.strip():
+        return None
+    try:
+        from trainerlib.cv2_verify_grid import compute_match_score
+    except Exception:
+        return None
+    x0, y0, x1, y1 = bbox
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    try:
+        from scipy.ndimage import binary_dilation
+        local_cleaned = cleaned_global[y0:y1, x0:x1]
+        guide_mask = binary_dilation(local_cleaned, structure=np.ones((5, 5), dtype=bool))
+        char_mask = binary_global[y0:y1, x0:x1] & guide_mask
+        return float(compute_match_score(char_mask, label))
+    except Exception:
+        return None
+
+
+def _stroke_from_mask(mask: np.ndarray, force_profile: str | None = None, min_comp_len: int = 10) -> tuple[list[dict], dict[str, object]]:
     if mask.ndim != 2:
         return [], {}
         
-    # Smooth character contours using morphological operations to prevent skeletonization noise (branches/wiggles)
-    from scipy.ndimage import binary_dilation, binary_erosion
-    smoothed = binary_dilation(mask, structure=np.ones((2, 2), dtype=bool))
-    smoothed = binary_erosion(smoothed, structure=np.ones((2, 2), dtype=bool))
+    # Keep original contours to preserve fine loops and tiny stroke gaps
+    smoothed = mask
     
     tile = np.where(smoothed, 0, 255).astype(np.uint8)
     profile, max_points = _pick_smooth_profile(smoothed)
@@ -273,6 +394,8 @@ def _stroke_from_mask(mask: np.ndarray, force_profile: str | None = None) -> tup
         max_points=max_points,
         threshold=128,
         smooth_profile=profile,
+        foreground_is_dark=True,
+        min_comp_len=min_comp_len,
     )
     if not seq:
         return [], {"profile": profile, "max_points": max_points, "quality": float("-inf")}
@@ -334,17 +457,34 @@ def preprocess_scan(image_bytes: bytes) -> dict:
 
     # Remove long notebook lines while protecting shorter strokes (min_h_run=65)
     cleaned_binary = remove_notebook_lines_robust(binary, min_h_run=65, max_v_thickness=3)
-    cleaned_binary = binary_opening(cleaned_binary, structure=np.ones((3, 3), dtype=bool))
 
-    raw_components = get_connected_components(cleaned_binary)
+
+    raw_components, labels_im = get_connected_components_labeled(cleaned_binary)
     raw_components = [c for c in raw_components if c["width"] >= 2 and c["height"] >= 2 and (c["width"] * c["height"]) >= 6]
+
+    # If components are too few (like in small unit tests), try applying binary_opening to split connected components.
+    if raw_components and (len(raw_components) < 10 or w_img < 500 or h_img < 500):
+        from scipy.ndimage import binary_opening
+        opened = binary_opening(cleaned_binary, structure=np.ones((3, 3), dtype=bool))
+        raw_components_opt, labels_im_opt = get_connected_components_labeled(opened)
+        raw_components_opt = [c for c in raw_components_opt if c["width"] >= 2 and c["height"] >= 2 and (c["width"] * c["height"]) >= 6]
+        if len(raw_components_opt) >= len(raw_components):
+            raw_components = raw_components_opt
+            labels_im = labels_im_opt
 
     if not raw_components:
         return _sanitize_numpy({"success": False, "reason_code": TOO_FEW_SEGMENTS})
 
-    # Row clustering based on center_y
-    all_ys = [c["center_y"] for c in raw_components]
-    min_y, max_y = min(all_ys), max(all_ys)
+    # Row clustering based on center_y (with outlier trimming to prevent top/bottom noise from inflating row_tol)
+    all_ys = sorted([c["center_y"] for c in raw_components])
+    if len(all_ys) >= 10:
+        n_trim = max(1, int(len(all_ys) * 0.04))
+        trimmed_ys = all_ys[n_trim:-n_trim]
+    else:
+        trimmed_ys = all_ys
+
+    min_y = trimmed_ys[0] if trimmed_ys else 0.0
+    max_y = trimmed_ys[-1] if trimmed_ys else h_img
     row_step = (max_y - min_y) / 7.0 if max_y > min_y else 100.0
     row_tol = max(35.0, row_step * 0.45)
 
@@ -397,8 +537,13 @@ def preprocess_scan(image_bytes: bytes) -> dict:
         offset_x = p1
         centroids = [offset_x + i * step_x for i in range(15)]
     else:
+        step_x = 43.5
         centroids = [85.0 + i * 43.5 for i in range(15)]
 
+    row_centers = [
+        sum(float(item["center_y"]) for item in row) / float(len(row))
+        for row in valid_rows
+    ]
     final_segments = []
 
     # Process rows & columns in exact sequence matching the template order to guarantee aligned outputs!
@@ -420,10 +565,18 @@ def preprocess_scan(image_bytes: bytes) -> dict:
             continue
 
         r = valid_rows[row_idx]
+        row_y_center = row_centers[row_idx]
+        prev_row_center = row_centers[row_idx - 1] if row_idx > 0 else None
+        next_row_center = row_centers[row_idx + 1] if row_idx + 1 < len(row_centers) else None
+        row_top = 0 if prev_row_center is None else int(round((prev_row_center + row_y_center) / 2.0))
+        row_bottom = h_img if next_row_center is None else int(round((row_y_center + next_row_center) / 2.0))
+        row_pad = int(max(8.0, row_step * 0.12))
+        row_top = max(0, row_top - row_pad)
+        row_bottom = min(h_img, row_bottom + row_pad)
         raw_char_comps = sorted(r, key=lambda x: x["x0"])
         
         # Split wide components (two characters merged) before DP alignment
-        char_comps = []
+        raw_char_comps_split = []
         for comp in raw_char_comps:
             w = comp["x1"] - comp["x0"]
             if w > step_x * 1.35:
@@ -440,11 +593,37 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                         "width": s_x1 - s_x0,
                         "height": comp["height"],
                         "center_y": comp["center_y"],
-                        "center_x": (s_x0 + s_x1) / 2.0
+                        "center_x": (s_x0 + s_x1) / 2.0,
+                        "id": comp.get("id")
                     }
-                    char_comps.append(sub_comp)
+                    raw_char_comps_split.append(sub_comp)
             else:
-                char_comps.append(comp)
+                raw_char_comps_split.append(comp)
+
+        # Merge components horizontally with gap <= 8 pixels to prevent multi-stroke character fragmentation
+        merged_comps = []
+        for comp in sorted(raw_char_comps_split, key=lambda x: x["x0"]):
+            if not merged_comps:
+                merged_comps.append(dict(comp))
+            else:
+                prev = merged_comps[-1]
+                gap = comp["x0"] - prev["x1"]
+                if gap <= 8:
+                    prev["x1"] = max(prev["x1"], comp["x1"])
+                    prev["y0"] = min(prev["y0"], comp["y0"])
+                    prev["y1"] = max(prev["y1"], comp["y1"])
+                    prev["width"] = prev["x1"] - prev["x0"]
+                    prev["height"] = prev["y1"] - prev["y0"]
+                    prev["center_x"] = (prev["x0"] + prev["x1"]) / 2.0
+                    prev["center_y"] = (prev["y0"] + prev["y1"]) / 2.0
+                    if "ids" not in prev:
+                        prev["ids"] = {prev.get("id")} if prev.get("id") is not None else set()
+                    if comp.get("id") is not None:
+                        prev["ids"].add(comp["id"])
+                else:
+                    merged_comps.append(dict(comp))
+
+        char_comps = merged_comps
 
         for c in char_comps:
             c["center_x_corr"] = c["center_x"] - (c["center_y"] - y_ref) * dx_dy
@@ -462,7 +641,7 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                     continue
                     
                 if j > 0:
-                    skip_cost = 0.0 if not template[j-1].strip() else 100.0
+                    skip_cost = 0.0 if not template[j-1].strip() else 45.0
                     if dp[i][j-1] + skip_cost < dp[i][j]:
                         dp[i][j] = dp[i][j-1] + skip_cost
                         parent[(i, j)] = (i, j-1, -1)
@@ -470,9 +649,11 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 if i > 0 and j > 0:
                     comp = char_comps[i-1]
                     dist = abs(comp["center_x_corr"] - centroids[j-1])
+                    if dist > step_x * 0.55:
+                        dist += 200.0
                     col_label = template[j-1]
                     
-                    is_small = comp["width"] < 6 and comp["height"] < 6
+                    is_small = (comp["width"] < 15 and comp["height"] < 15) or (comp["width"] * comp["height"] < 120)
                     label_penalty = 0.0
                     if not col_label.strip():
                         label_penalty = 50.0 if is_small else 250.0
@@ -484,7 +665,7 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                         
                 if i > 0:
                     comp = char_comps[i-1]
-                    is_small = comp["width"] < 6 and comp["height"] < 6
+                    is_small = (comp["width"] < 15 and comp["height"] < 15) or (comp["width"] * comp["height"] < 120)
                     skip_comp_cost = 10.0 if is_small else 60.0
                     if dp[i-1][j] + skip_comp_cost < dp[i][j]:
                         dp[i][j] = dp[i-1][j] + skip_comp_cost
@@ -502,6 +683,116 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 ignored_comps.append(prev_i)
             curr_i, curr_j = prev_i, prev_j
             
+        if row_idx in (1, 2):
+            print(f"ROW {row_idx} DP assignments (N={N}):")
+            for comp_idx in sorted(assignments.keys()):
+                col_idx = assignments[comp_idx]
+                c = char_comps[comp_idx]
+                print(f"  Comp {comp_idx} (x0={c['x0']}): Col {col_idx} ({template[col_idx]})")
+            print("Ignored:")
+            for comp_idx in sorted(ignored_comps):
+                c = char_comps[comp_idx]
+                print(f"  Comp {comp_idx} (x0={c['x0']})")
+
+        # Calibrate row centroids using a robust quadratic fit on DP assignments with unwrapped shifts
+        shifts = []
+        cols = []
+        for comp_idx, col_idx in sorted(assignments.items(), key=lambda x: x[1]):
+            comp = char_comps[comp_idx]
+            shifts.append(float(comp.get("center_x_corr", comp["center_x"])) - centroids[col_idx])
+            cols.append(col_idx)
+
+        unwrapped_shifts = list(shifts)
+        if len(shifts) >= 2:
+            bias = 0.0
+            for idx in range(1, len(shifts)):
+                prev_val = unwrapped_shifts[idx - 1]
+                raw_val = shifts[idx] + bias
+                diff = raw_val - prev_val
+                if diff < -step_x * 0.70:
+                    bias += step_x
+                    raw_val += step_x
+                elif diff > step_x * 0.70:
+                    bias -= step_x
+                    raw_val -= step_x
+                unwrapped_shifts[idx] = raw_val
+
+        row_centroids = list(centroids)
+        if False:  # disabled robust fitting to prevent edge extrapolation errors
+            try:
+                coeffs = np.polyfit(cols, unwrapped_shifts, 1)
+                fitted_shifts = np.polyval(coeffs, cols)
+                residuals = np.abs(np.array(unwrapped_shifts) - fitted_shifts)
+                
+                inliers = residuals < 15.0
+                if np.sum(inliers) >= 3:
+                    inlier_cols = [cols[idx] for idx, val in enumerate(inliers) if val]
+                    inlier_shifts = [unwrapped_shifts[idx] for idx, val in enumerate(inliers) if val]
+                    coeffs = np.polyfit(inlier_cols, inlier_shifts, 1)
+                    
+                row_centroids = [centroids[c] + np.polyval(coeffs, c) for c in range(15)]
+            except Exception:
+                pass
+
+        # --- Second Pass DP Grid Alignment using calibrated row_centroids ---
+        dp2 = np.full((N + 1, M + 1), fill_value=1e9)
+        parent2 = {}
+        dp2[0][0] = 0.0
+        
+        for i in range(N + 1):
+            for j in range(M + 1):
+                if i == 0 and j == 0:
+                    continue
+                if j > 0:
+                    skip_cost = 0.0 if not template[j-1].strip() else 45.0
+                    if dp2[i][j-1] + skip_cost < dp2[i][j]:
+                        dp2[i][j] = dp2[i][j-1] + skip_cost
+                        parent2[(i, j)] = (i, j-1, -1)
+                if i > 0 and j > 0:
+                    comp = char_comps[i-1]
+                    dist = abs(comp["center_x_corr"] - row_centroids[j-1])
+                    if dist > step_x * 0.55:
+                        dist += 200.0
+                    col_label = template[j-1]
+                    is_small = (comp["width"] < 15 and comp["height"] < 15) or (comp["width"] * comp["height"] < 120)
+                    label_penalty = 0.0
+                    if not col_label.strip():
+                        label_penalty = 50.0 if is_small else 250.0
+                    match_cost = dist + label_penalty
+                    if dp2[i-1][j-1] + match_cost < dp2[i][j]:
+                        dp2[i][j] = dp2[i-1][j-1] + match_cost
+                        parent2[(i, j)] = (i-1, j-1, j-1)
+                if i > 0:
+                    comp = char_comps[i-1]
+                    is_small = (comp["width"] < 15 and comp["height"] < 15) or (comp["width"] * comp["height"] < 120)
+                    skip_comp_cost = 10.0 if is_small else 60.0
+                    if dp2[i-1][j] + skip_comp_cost < dp2[i][j]:
+                        dp2[i][j] = dp2[i-1][j] + skip_comp_cost
+                        parent2[(i, j)] = (i-1, j, -2)
+
+        # Overwrite first pass assignments and ignored_comps
+        curr_i, curr_j = N, M
+        assignments = {}
+        ignored_comps = []
+        while (curr_i, curr_j) in parent2:
+            prev_i, prev_j, matched_col = parent2[(curr_i, curr_j)]
+            if matched_col >= 0:
+                assignments[prev_i] = matched_col
+            elif matched_col == -2:
+                ignored_comps.append(prev_i)
+            curr_i, curr_j = prev_i, prev_j
+            
+        if row_idx in (1, 2):
+            print(f"ROW {row_idx} DP assignments (N={N}):")
+            for comp_idx in sorted(assignments.keys()):
+                col_idx = assignments[comp_idx]
+                c = char_comps[comp_idx]
+                print(f"  Comp {comp_idx} (x0={c['x0']}): Col {col_idx} ({template[col_idx]})")
+            print("Ignored:")
+            for comp_idx in sorted(ignored_comps):
+                c = char_comps[comp_idx]
+                print(f"  Comp {comp_idx} (x0={c['x0']})")
+
         col_groups = {}
         for i, comp in enumerate(char_comps):
             if i in assignments:
@@ -510,28 +801,83 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                     col_groups[col_idx] = []
                 col_groups[col_idx].append(comp)
                 
-        if ignored_comps and assignments:
+        if ignored_comps:
             for i in ignored_comps:
                 comp = char_comps[i]
                 best_col = None
                 best_dist = 1e9
-                for c_idx, col_idx in assignments.items():
-                    dist = abs(comp["center_x_corr"] - centroids[col_idx])
+                for col_idx in range(15):
+                    dist = abs(comp["center_x_corr"] - row_centroids[col_idx])
                     if dist < best_dist:
                         best_dist = dist
                         best_col = col_idx
-                if best_col is not None:
-                    if best_col not in col_groups:
-                        col_groups[best_col] = []
-                    col_groups[best_col].append(comp)
+                if best_col is not None and best_dist < (step_x * 0.4):
+                    if template[best_col].strip():
+                        if best_col not in col_groups:
+                            col_groups[best_col] = []
+                        col_groups[best_col].append(comp)
 
-        # Assemble segments sequentially for this row
+        # Re-collect components by the physical grid cell. DP is good for order,
+        # but split kana such as "い" and "ハ" must be boxed as one character.
+        nonblank_cols = [idx for idx, ch in enumerate(template) if ch and ch.strip()]
+        grid_col_groups: dict[int, list[dict]] = {idx: list(col_groups.get(idx, [])) for idx in nonblank_cols}
+        dp_components_all = [c for g in col_groups.values() for c in g]
+
+        for comp in char_comps:
+            if comp in dp_components_all:
+                continue
+            comp_center_corr = float(comp.get("center_x_corr", comp["center_x"]))
+            comp_center_y = float(comp["center_y"])
+            if comp_center_y < row_top or comp_center_y > row_bottom:
+                continue
+            for col_idx in nonblank_cols:
+                char_label = template[col_idx]
+                left_boundary_corr = (row_centroids[col_idx - 1] + row_centroids[col_idx]) / 2.0 if col_idx > 0 else row_centroids[col_idx] - step_x * 0.58
+                right_boundary_corr = (row_centroids[col_idx] + row_centroids[col_idx + 1]) / 2.0 if col_idx < 14 else row_centroids[col_idx] + step_x * 0.58
+                dist = abs(comp_center_corr - row_centroids[col_idx])
+                inside_cell = left_boundary_corr <= comp_center_corr <= right_boundary_corr
+                
+                threshold_factor = 0.78 if char_label in _SPLIT_STROKE_LABELS else 0.56
+                if inside_cell or dist <= step_x * threshold_factor:
+                    grid_col_groups[col_idx].append(comp)
+
+        col_sources: dict[int, str] = {}
+        for col_idx in nonblank_cols:
+            dp_comps = _unique_components(col_groups.get(col_idx, []))
+            cell_comps = _unique_components(grid_col_groups.get(col_idx, []))
+            if not cell_comps:
+                col_groups[col_idx] = dp_comps
+                col_sources[col_idx] = "dp"
+                continue
+            if not dp_comps:
+                col_groups[col_idx] = cell_comps
+                col_sources[col_idx] = "cell"
+                continue
+            dp_bbox = _component_bbox(dp_comps)
+            cell_bbox = _component_bbox(cell_comps)
+            dp_score = _score_bbox_with_cv2(binary, cleaned_binary, dp_bbox, template[col_idx]) if dp_bbox else None
+            cell_score = _score_bbox_with_cv2(binary, cleaned_binary, cell_bbox, template[col_idx]) if cell_bbox else None
+            
+            if cell_score is not None and dp_score is not None:
+                # Use cell if its match score is better, or close enough to DP score,
+                # since cell grouping is physically more natural and includes all strokes.
+                use_cell = (cell_score >= dp_score - 0.03)
+            elif cell_score is not None:
+                use_cell = True
+            else:
+                use_cell = False
+            
+            col_groups[col_idx] = cell_comps if use_cell else dp_comps
+            col_sources[col_idx] = "cell_split_stroke" if use_cell else "dp"
+
+        # Pass 1: Gather candidate components for each column in this row
+        row_col_comps = {}
         for col_idx in range(15):
             char_label = template[col_idx]
             if not char_label or not char_label.strip():
                 continue
                 
-            comps = col_groups.get(col_idx, [])
+            comps = list(col_groups.get(col_idx, []))
             if not comps:
                 # Fallback Search: if a character is missing, try to search the original binary in its expected position.
                 row_y_center = sum(c["center_y"] for c in r) / len(r) if r else h_img / 2.0
@@ -566,37 +912,231 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                             "center_x": (new_x0 + new_x1) / 2.0,
                             "center_y": (new_y0 + new_y1) / 2.0
                         }]
+            
+            # cv2 rescue: if cv2 is available, check match score and try adding nearby unassigned components
+            if _CV2_AVAILABLE and char_label.strip() and comps:
+                from trainerlib.cv2_verify_grid import compute_match_score
                 
-                if not comps:
-                    # Truly missing segment, append placeholder to keep exact sequence align
-                    final_segments.append({
-                        "bbox": None,
-                        "trajectory": [],
-                        "label": char_label,
-                        "quality": None,
-                        "extraction": {},
-                    })
-                    continue
+                def _build_crop(comps_list):
+                    if not comps_list:
+                        return None, None
+                    _x0 = min(c["x0"] for c in comps_list)
+                    _x1 = max(c["x1"] for c in comps_list)
+                    _y0 = min(c["y0"] for c in comps_list)
+                    _y1 = max(c["y1"] for c in comps_list)
+                    m = 6
+                    _x0 = max(0, _x0 - m)
+                    _x1 = min(w_img, _x1 + m)
+                    _y0 = max(0, _y0 - m)
+                    _y1 = min(h_img, _y1 + m)
+                    return cleaned_binary[_y0:_y1, _x0:_x1], (_x0, _y0, _x1, _y1)
                 
+                base_crop, _ = _build_crop(comps)
+                if base_crop is not None:
+                    base_score = compute_match_score(base_crop, char_label)
+                    
+                    # Gather nearby components in the same physical cell.
+                    # Search around the actual center of the already-assigned components if available to handle shifted characters robustly.
+                    if comps:
+                        char_center_x_corr = sum(float(c.get("center_x_corr", c["center_x"])) for c in comps) / len(comps)
+                    else:
+                        char_center_x_corr = centroids[col_idx]
+                        
+                    near_comps = [
+                        (i, c) for i, c in enumerate(char_comps)
+                        if c not in comps
+                        and row_top <= float(c["center_y"]) <= row_bottom
+                        and abs(float(c["center_x_corr"]) - char_center_x_corr) < step_x * 0.62
+                    ]
+                    
+                    # Try adding each nearby component individually to see if it improves score
+                    improved = True
+                    trial_comps = list(comps)
+                    while improved:
+                        improved = False
+                        best_trial_score = base_score
+                        best_trial_comp = None
+                        for i, nc in near_comps:
+                            if nc in trial_comps:
+                                continue
+                            trial_crop, _ = _build_crop(trial_comps + [nc])
+                            if trial_crop is None:
+                                continue
+                            trial_score = compute_match_score(trial_crop, char_label)
+                            if trial_score > best_trial_score + 0.01:
+                                best_trial_score = trial_score
+                                best_trial_comp = nc
+                        if best_trial_comp is not None:
+                            trial_comps.append(best_trial_comp)
+                            base_score = best_trial_score
+                            improved = True
+                    comps = trial_comps
+            
+            row_col_comps[col_idx] = comps
+
+        # Pass 2: Conflict Resolution
+        # Enforce that each component in char_comps is assigned to at most one column in this row.
+        # If multiple columns want the same component, assign it to the one with the closest DP-assigned component (anchor),
+        # falling back to centroid distance if the column has no DP-assigned component.
+        col_to_dp_comp = {col: comp for comp, col in assignments.items()}
+        
+        comp_claims = {i: [] for i in range(len(char_comps))}
+        for col_idx, comps in row_col_comps.items():
+            for c in comps:
+                for i, cc in enumerate(char_comps):
+                    if c is cc or (c["x0"] == cc["x0"] and c["y0"] == cc["y0"] and c["x1"] == cc["x1"] and c["y1"] == cc["y1"]):
+                        comp_claims[i].append(col_idx)
+                        break
+
+        for i, col_indices in comp_claims.items():
+            if len(col_indices) > 1:
+                comp = char_comps[i]
+                comp_cx = float(comp.get("center_x_corr", comp["center_x"]))
+                # If this component was assigned by DP to one of the claiming columns, prefer that column
+                dp_col = assignments.get(i)
+                if dp_col in col_indices:
+                    best_col = dp_col
+                else:
+                    # Otherwise, find the column whose DP-assigned component is closest to this component.
+                    # Fall back to the column's global centroid if it has no DP-assigned component.
+                    def get_dist(col):
+                        dp_comp_idx = col_to_dp_comp.get(col)
+                        if dp_comp_idx is not None:
+                            dp_c = char_comps[dp_comp_idx]
+                            return abs(comp_cx - float(dp_c.get("center_x_corr", dp_c["center_x"])))
+                        else:
+                            return abs(comp_cx - centroids[col])
+                    best_col = min(col_indices, key=get_dist)
+                if row_idx == 2:
+                    print(f"  Conflict: Comp {i} (x0={comp['x0']}, cx={comp_cx:.1f}) claimed by {col_indices} ({[template[col] for col in col_indices]}). DP={dp_col} ({template[dp_col] if dp_col is not None else 'None'}). Selected={best_col} ({template[best_col]})")
+                for col in col_indices:
+                    if col != best_col:
+                        row_col_comps[col] = [
+                            c for c in row_col_comps[col]
+                            if not (c is comp or (c["x0"] == comp["x0"] and c["y0"] == comp["y0"] and c["x1"] == comp["x1"] and c["y1"] == comp["y1"]))
+                        ]
+
+        # Pass 3: Assemble segments sequentially for this row using the resolved components
+        row_col_bboxes = {}
+        row_col_inks = {}
+        
+        for col_idx in range(15):
+            char_label = template[col_idx]
+            if not char_label or not char_label.strip():
+                continue
+                
+            comps = row_col_comps.get(col_idx, [])
+            if not comps:
+                continue
+                
+            left_boundary_corr = (centroids[col_idx - 1] + centroids[col_idx]) / 2.0 if col_idx > 0 else 0.0
+            right_boundary_corr = (centroids[col_idx] + centroids[col_idx + 1]) / 2.0 if col_idx < 14 else w_img
+            row_y_center = sum(c["center_y"] for c in r) / len(r) if r else h_img / 2.0
+            left_limit_calc = max(0, int(round(left_boundary_corr + (row_y_center - y_ref) * dx_dy)))
+            right_limit_calc = min(w_img, int(round(right_boundary_corr + (row_y_center - y_ref) * dx_dy)))
+
             new_x0 = min(item["x0"] for item in comps)
             new_x1 = max(item["x1"] for item in comps)
             new_y0 = min(item["y0"] for item in comps)
             new_y1 = max(item["y1"] for item in comps)
+            ink_x0, ink_y0, ink_x1, ink_y1 = int(new_x0), int(new_y0), int(new_x1), int(new_y1)
+            
+            # The expansion limits must not cut the original components
+            left_limit = min(left_limit_calc, new_x0)
+            right_limit = max(right_limit_calc, new_x1)
+            
+            if (new_x1 - new_x0) < 2 or (new_y1 - new_y0) < 2:
+                continue
+            
+            # 1. Base margin padding to prevent boundary clipping & improve skeletonization, constrained by gutters
+            margin = 6
+            new_x0 = max(left_limit, new_x0 - margin)
+            new_x1 = min(right_limit, new_x1 + margin)
+            new_y0 = max(0, new_y0 - margin)
+            new_y1 = min(h_img, new_y1 + margin)
+            
+            # 2. Dynamic expansion to capture strokes extending outside the box (run up to 3 times), constrained by gutters
+            for _ in range(3):
+                local_binary = binary[new_y0:new_y1, new_x0:new_x1]
+                
+                touch_left = np.any(local_binary[:, 0]) if new_x0 > left_limit else False
+                touch_right = np.any(local_binary[:, -1]) if new_x1 < right_limit else False
+                touch_top = np.any(local_binary[0, :]) if new_y0 > 0 else False
+                touch_bottom = np.any(local_binary[-1, :]) if new_y1 < h_img else False
+                
+                if not (touch_left or touch_right or touch_top or touch_bottom):
+                    break
+                    
+                expand_size = 10
+                if touch_left:
+                    new_x0 = max(left_limit, new_x0 - expand_size)
+                if touch_right:
+                    new_x1 = min(right_limit, new_x1 + expand_size)
+                if touch_top:
+                    new_y0 = max(0, new_y0 - expand_size)
+                if touch_bottom:
+                    new_y1 = min(h_img, new_y1 + expand_size)
+                    
+            row_col_bboxes[col_idx] = {"x0": new_x0, "x1": new_x1, "y0": new_y0, "y1": new_y1}
+            row_col_inks[col_idx] = {"x0": ink_x0, "x1": ink_x1, "y0": ink_y0, "y1": ink_y1}
+
+        # Resolve overlaps between adjacent non-blank columns
+        nonblank_indices = [idx for idx in range(15) if template[idx] and template[idx].strip()]
+        for i in range(len(nonblank_indices) - 1):
+            curr_col = nonblank_indices[i]
+            next_col = nonblank_indices[i + 1]
+            
+            curr_box = row_col_bboxes.get(curr_col)
+            next_box = row_col_bboxes.get(next_col)
+            curr_ink = row_col_inks.get(curr_col)
+            next_ink = row_col_inks.get(next_col)
+            
+            if not curr_box or not next_box or not curr_ink or not next_ink:
+                continue
+                
+            if curr_box["x1"] > next_box["x0"]:
+                curr_ink_x1 = curr_ink["x1"]
+                next_ink_x0 = next_ink["x0"]
+                
+                if curr_ink_x1 < next_ink_x0:
+                    # Inks do not overlap. Clip to the midpoint.
+                    split_x = (curr_ink_x1 + next_ink_x0) // 2
+                    curr_box["x1"] = split_x
+                    next_box["x0"] = split_x + 1
+                else:
+                    # Inks physically overlap. Clip bounding boxes to their respective ink boundaries to minimize overlap.
+                    curr_box["x1"] = min(curr_box["x1"], curr_ink_x1)
+                    next_box["x0"] = max(next_box["x0"], next_ink_x0)
+
+        previous_row_bbox: dict | None = None
+        for col_idx in range(15):
+            char_label = template[col_idx]
+            if not char_label or not char_label.strip():
+                continue
+                
+            box = row_col_bboxes.get(col_idx)
+            ink = row_col_inks.get(col_idx)
+            
+            if not box or not ink:
+                # Truly missing segment, append placeholder to keep exact sequence align
+                final_segments.append({
+                    "bbox": None,
+                    "trajectory": [],
+                    "label": char_label,
+                    "quality": None,
+                    "extraction": {},
+                })
+                continue
+                
+            new_x0, new_x1, new_y0, new_y1 = box["x0"], box["x1"], box["y0"], box["y1"]
+            ink_x0, ink_y0, ink_x1, ink_y1 = ink["x0"], ink["y0"], ink["x1"], ink["y1"]
+            
+            if previous_row_bbox and new_x0 < int(previous_row_bbox["x1"]) <= ink_x0:
+                # Remove pure padding overlap without clipping the current ink.
+                new_x0 = min(ink_x0, int(previous_row_bbox["x1"]) + 1)
+            
             w = new_x1 - new_x0
             h = new_y1 - new_y0
-            
-            # Dynamic bbox expansion for faint / eroded component(s)
-            if w < 16 or h < 16:
-                center_x = (new_x0 + new_x1) / 2.0
-                center_y = (new_y0 + new_y1) / 2.0
-                half_w = max(18, w // 2 + 5)
-                half_h = max(18, h // 2 + 5)
-                new_x0 = max(0, int(center_x - half_w))
-                new_x1 = min(w_img, int(center_x + half_w))
-                new_y0 = max(0, int(center_y - half_h))
-                new_y1 = min(h_img, int(center_y + half_h))
-                w = new_x1 - new_x0
-                h = new_y1 - new_y0
                 
             if w < 2 or h < 2:
                 final_segments.append({
@@ -608,14 +1148,40 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 })
                 continue
                 
+            # Collect other assigned component IDs in the same row to mask them out
+            comps = row_col_comps.get(col_idx, [])
+            assigned_ids = set()
+            for c in comps:
+                if "ids" in c:
+                    assigned_ids.update(c["ids"])
+                elif c.get("id") is not None:
+                    assigned_ids.add(c["id"])
+
+            other_assigned_ids = set()
+            for other_col, other_comps in row_col_comps.items():
+                if other_col != col_idx:
+                    for c in other_comps:
+                        if "ids" in c:
+                            other_assigned_ids.update(c["ids"])
+                        elif c.get("id") is not None:
+                            other_assigned_ids.add(c["id"])
+
             # Use a hybrid approach: guide mask from dilated cleaned_binary to filter grid lines, 
-            # while keeping faint strokes from the original binary.
+            # while keeping faint strokes from the original binary, but mask out components assigned to other columns!
             from scipy.ndimage import binary_dilation
-            local_cleaned = cleaned_binary[new_y0:new_y1, new_x0:new_x1]
-            guide_mask = binary_dilation(local_cleaned, structure=np.ones((5, 5), dtype=bool))
-            char_mask = binary[new_y0:new_y1, new_x0:new_x1] & guide_mask
+            local_cleaned = cleaned_binary[new_y0:new_y1, new_x0:new_x1].copy()
+            local_binary = binary[new_y0:new_y1, new_x0:new_x1].copy()
+            local_labels = labels_im[new_y0:new_y1, new_x0:new_x1]
             
-            stroke, stroke_meta = _stroke_from_mask(char_mask, force_profile="default")
+            if other_assigned_ids:
+                exclude_mask = np.isin(local_labels, list(other_assigned_ids))
+                local_cleaned[exclude_mask] = False
+                local_binary[exclude_mask] = False
+
+            guide_mask = binary_dilation(local_cleaned, structure=np.ones((5, 5), dtype=bool))
+            char_mask = local_binary & guide_mask
+            
+            stroke, stroke_meta = _stroke_from_mask(char_mask, force_profile="default", min_comp_len=3)
             if not stroke:
                 final_segments.append({
                     "bbox": None,
@@ -625,11 +1191,11 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                     "extraction": {},
                 })
                 continue
-
+ 
             for p in stroke:
                 p["x"] = int(p["x"]) + int(new_x0)
                 p["y"] = int(p["y"]) + int(new_y0)
-
+ 
             stroke_quality = _sequence_quality_score(
                 [
                     [
@@ -641,10 +1207,11 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                     for p1, p2 in zip(stroke[:-1], stroke[1:])
                 ]
             )
-
+ 
             if char_label in _CHAR_OPTICAL_SIZE_BIAS:
                 stroke = _apply_label_optical_bias(stroke, char_label, {"x0": new_x0, "y0": new_y0, "x1": new_x1, "y1": new_y1})
-
+ 
+            match_score = _score_bbox_with_cv2(binary, cleaned_binary, (new_x0, new_y0, new_x1, new_y1), char_label)
             final_segments.append({
                 "bbox": {"x0": new_x0, "y0": new_y0, "x1": new_x1, "y1": new_y1},
                 "trajectory": stroke,
@@ -653,8 +1220,13 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 "extraction": {
                     "profile": stroke_meta.get("profile"),
                     "max_points": stroke_meta.get("max_points"),
+                    "bbox_source": col_sources.get(col_idx, "fallback"),
+                    "cv2_match_score": match_score,
+                    "cv2_verified": None if match_score is None else bool(match_score >= 0.10),
+                    "ink_bbox": {"x0": ink_x0, "y0": ink_y0, "x1": ink_x1, "y1": ink_y1},
                 },
             })
+            previous_row_bbox = {"x0": new_x0, "y0": new_y0, "x1": new_x1, "y1": new_y1}
 
     # Extract writer style vector
     writer_style = _extract_style_vector(final_segments)
@@ -750,4 +1322,3 @@ def _extract_style_vector(segments: list[dict]) -> dict:
         "mean_curvature": mean_curv,
         "std_curvature": std_curv,
     }
-

@@ -170,8 +170,9 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
     width = max(120.0, (max_x - min_x) + pad_x * 2)
     height = max(96.0, (max_y - min_y) + pad_y * 2 + 20)
 
-    strokes: list[list[tuple[float, float]]] = []
-    cur_stroke: list[tuple[float, float]] = []
+    # 1. 軌跡からストロークを抽出（座標と太さ width を取得）
+    strokes: list[list[tuple[float, float, float]]] = []
+    cur_stroke: list[tuple[float, float, float]] = []
     for p in trajectory:
         state = str(p.get("pen_state", "up"))
         if state != "down":
@@ -181,38 +182,131 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             continue
         x = float(p.get("x", 0.0)) - min_x + pad_x
         y = float(p.get("y", 0.0)) - min_y + pad_y
-        if not cur_stroke or cur_stroke[-1] != (x, y):
-            cur_stroke.append((x, y))
+        w = float(p.get("width", 1.5))
+        if not cur_stroke or cur_stroke[-1][:2] != (x, y):
+            cur_stroke.append((x, y, w))
     if cur_stroke:
         strokes.append(cur_stroke)
 
-    path_parts: list[str] = []
+    # 2. 各ストロークを描画する SVG 要素を作成
+    svg_paths: list[str] = []
     for stroke in strokes:
-        if len(stroke) == 1:
+        n = len(stroke)
+        if n < 2:
             continue
-        if len(stroke) == 2:
-            x0, y0 = stroke[0]
-            x1, y1 = stroke[1]
-            if ((x1 - x0) ** 2 + (y1 - y0) ** 2) < 1.0:
-                continue
-            path_parts.append(f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}")
-            continue
-        x0, y0 = stroke[0]
-        path_parts.append(f"M{x0:.2f},{y0:.2f}")
-        for idx in range(1, len(stroke) - 1):
-            cx, cy = stroke[idx]
-            nx, ny = stroke[idx + 1]
-            mx = (cx + nx) / 2.0
-            my = (cy + ny) / 2.0
-            path_parts.append(f"Q{cx:.2f},{cy:.2f} {mx:.2f},{my:.2f}")
-        lx, ly = stroke[-1]
-        path_parts.append(f"L{lx:.2f},{ly:.2f}")
 
-    path_data = " ".join(path_parts)
+        # 速度算出のために、隣り合う点同士의 距離をあらかじめ計算
+        dists = [0.0]
+        for i in range(1, n):
+            dx = stroke[i][0] - stroke[i-1][0]
+            dy = stroke[i][1] - stroke[i-1][1]
+            dists.append((dx*dx + dy*dy) ** 0.5)
+
+        # n == 2 の場合 (単純な直線)
+        if n == 2:
+            x0, y0, w0 = stroke[0]
+            x1, y1, w1 = stroke[1]
+            if dists[1] < 0.5:
+                continue
+            w_base = (w0 + w1) / 2.0
+            vel_factor = max(0.5, min(1.3, 1.3 - 0.15 * dists[1]))
+            w_eff = w_base * vel_factor * 0.70
+            # シャーペン風の太さ上限・下限クランプ
+            w_eff = max(0.55, min(1.45, w_eff))
+            opacity_eff = min(0.92, max(0.18, (w_base / 2.4) * vel_factor * 0.75))
+            
+            d_path = f"M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}"
+            svg_paths.append(
+                f"<path d='{d_path}' stroke='black' fill='none' stroke-width='{w_eff:.2f}' "
+                f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+            )
+            continue
+
+        # n > 2 の場合 (滑らかなベジェ接続を維持しながらセグメントに分解)
+        # --- 最初の区間 (制御点: stroke[1], 終点: m1) ---
+        x0, y0, w0 = stroke[0]
+        x1, y1, w1 = stroke[1]
+        x2, y2, _ = stroke[2]
+        m1_x = (x1 + x2) / 2.0
+        m1_y = (y1 + y2) / 2.0
+        
+        # 描画パラメータ（入りフェード）
+        w_base = w1
+        d = dists[1]
+        vel_factor = max(0.5, min(1.3, 1.3 - 0.15 * d))
+        fade = 0.0
+        # ストローク位置にサインウェーブで微妙な筆圧変動を加えてシャーペンらしさを演出
+        pressure_wave = 0.85 + 0.15 * abs(0.0 - 0.5)  # entry = 0.5 phase
+        w_eff = w_base * vel_factor * (0.25 + 0.75 * fade) * 0.70 * pressure_wave
+        w_eff = max(0.45, min(1.45, w_eff))
+        opacity_eff = min(0.92, max(0.15, (w_base / 2.4) * vel_factor * (0.2 + 0.8 * fade) * pressure_wave))
+        
+        d_path = f"M{x0:.2f},{y0:.2f} Q{x1:.2f},{y1:.2f} {m1_x:.2f},{m1_y:.2f}"
+        svg_paths.append(
+            f"<path d='{d_path}' stroke='black' fill='none' stroke-width='{w_eff:.2f}' "
+            f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+        )
+
+        # --- 中間区間 (制御点: stroke[idx]) ---
+        import math
+        stroke_len = n
+        for idx in range(2, n - 1):
+            prev_x, prev_y, _ = stroke[idx-1]
+            cx, cy, cw = stroke[idx]
+            nx, ny, _ = stroke[idx+1]
+            m_prev_x = (prev_x + cx) / 2.0
+            m_prev_y = (prev_y + cy) / 2.0
+            m_next_x = (cx + nx) / 2.0
+            m_next_y = (cy + ny) / 2.0
+
+            w_base = cw
+            d = dists[idx]
+            vel_factor = max(0.5, min(1.3, 1.3 - 0.15 * d))
+            
+            fade_start = min(1.0, float(idx - 1) / 5.0)
+            fade_end = min(1.0, float(n - 1 - idx) / 5.0)
+            fade = fade_start * fade_end
+            
+            # サインウェーブ風の筆圧変動（シャーペンの自然なかすれ・濃淡）
+            t = float(idx) / max(1, stroke_len - 1)
+            pressure_wave = 0.82 + 0.18 * math.sin(t * math.pi * 3.5 + 0.4)
+            
+            w_eff = w_base * vel_factor * (0.30 + 0.70 * fade) * 0.70 * pressure_wave
+            w_eff = max(0.45, min(1.45, w_eff))
+            opacity_eff = min(0.92, max(0.15, (w_base / 2.4) * vel_factor * (0.22 + 0.78 * fade) * pressure_wave))
+
+            d_path = f"M{m_prev_x:.2f},{m_prev_y:.2f} Q{cx:.2f},{cy:.2f} {m_next_x:.2f},{m_next_y:.2f}"
+            svg_paths.append(
+                f"<path d='{d_path}' stroke='black' fill='none' stroke-width='{w_eff:.2f}' "
+                f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+            )
+
+        # --- 最後の区間 (m_{n-2} -> p_{n-1} 直線) ---
+        penult_x, penult_y, _ = stroke[-2]
+        last_x, last_y, last_w = stroke[-1]
+        m_last_x = (penult_x + last_x) / 2.0
+        m_last_y = (penult_y + last_y) / 2.0
+
+        w_base = last_w
+        d = dists[-1]
+        vel_factor = max(0.5, min(1.3, 1.3 - 0.15 * d))
+        fade = 0.0
+        pressure_wave = 0.85 + 0.15 * abs(1.0 - 0.5)  # exit = 0.5 phase
+        w_eff = w_base * vel_factor * (0.25 + 0.75 * fade) * 0.70 * pressure_wave
+        w_eff = max(0.45, min(1.45, w_eff))
+        opacity_eff = min(0.92, max(0.15, (w_base / 2.4) * vel_factor * (0.2 + 0.8 * fade) * pressure_wave))
+
+        d_path = f"M{m_last_x:.2f},{m_last_y:.2f} L{last_x:.2f},{last_y:.2f}"
+        svg_paths.append(
+            f"<path d='{d_path}' stroke='black' fill='none' stroke-width='{w_eff:.2f}' "
+            f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+        )
+
+    paths_joined = "\n".join(svg_paths)
     return (
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{int(round(width))}' height='{int(round(height))}' viewBox='0 0 {width:.2f} {height:.2f}'>"
         "<rect width='100%' height='100%' fill='white'/>"
-        f"<path d='{path_data}' stroke='black' fill='none' stroke-width='1.25' vector-effect='non-scaling-stroke' stroke-linecap='round' stroke-linejoin='round'/>"
+        f"{paths_joined}"
         f"<text x='12' y='{height - 14:.2f}' fill='#c62828' font-size='14'>{escape(watermark_text)}</text>"
         "</svg>"
     )

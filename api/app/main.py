@@ -2423,16 +2423,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         )
         if not isinstance(direct_text_exemplars, dict):
             return []
-        # Avoid applying a learned style to characters the user never provided.
-        # The merged base exemplars are useful as a fallback, but using them as
-        # "learned" output caused thin scribble-like regressions.
-        for ch in text:
-            if ch.isspace() or _is_punctuation_char(ch):
-                continue
-            bucket = direct_text_exemplars.get(ch)
-            if not isinstance(bucket, list) or len(bucket) == 0:
-                return []
-        candidate = generate_trajectory(text, adapter_seed, settings.base_model_path, correction=0.20)
+        candidate = generate_trajectory(text, adapter_seed, settings.base_model_path)
         return candidate
 
     if settings.text_only_mode or (
@@ -2462,7 +2453,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             except Exception:
                 adapter_seed = ""
             if adapter_seed:
-                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
+                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
                 if _is_usable_trajectory(style_candidate, payload.text):
                     trajectory = style_candidate
         # 2) Runtime synthesis for hiragana if style path failed.
@@ -2489,7 +2480,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             except Exception:
                 adapter_seed = ""
             if adapter_seed:
-                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
+                style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
                 if _is_usable_trajectory(style_candidate, payload.text):
                     trajectory = style_candidate
         # Skip base model fallback for Latin characters when there is no custom user style adapter,
@@ -2518,7 +2509,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         # user sample can still be rendered from the learned base dataset.
         has_user_coverage = _has_kana_coverage(payload.text, exemplars_text if isinstance(exemplars_text, dict) else None)
         trajectory = []
-        style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path, correction=0.20)
+        style_candidate = generate_trajectory(payload.text, adapter_seed, settings.base_model_path)
         if _is_usable_trajectory(style_candidate, payload.text):
             trajectory = style_candidate
         if not trajectory:

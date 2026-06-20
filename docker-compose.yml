@@ -61,6 +61,10 @@ services:
     command: ["uvicorn", "api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - ./storage:/app/storage
+      - ./api:/app/api
+      - ./trainerlib:/app/trainerlib
+      - ./trainer:/app/trainer
+      - ./scratch:/app/scratch
     depends_on:
       - postgres
       - redis
@@ -83,6 +87,10 @@ services:
     command: ["python", "api/worker_main.py"]
     volumes:
       - ./storage:/app/storage
+      - ./api:/app/api
+      - ./trainerlib:/app/trainerlib
+      - ./trainer:/app/trainer
+      - ./scratch:/app/scratch
     depends_on:
       - postgres
       - redis
@@ -104,6 +112,10 @@ services:
       S3_BUCKET: ${S3_BUCKET:-handwriting}
     volumes:
       - ./storage:/app/storage
+      - ./api:/app/api
+      - ./trainerlib:/app/trainerlib
+      - ./trainer:/app/trainer
+      - ./scratch:/app/scratch
     depends_on:
       - postgres
       - redis

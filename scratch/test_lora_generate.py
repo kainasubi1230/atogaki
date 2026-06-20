@@ -1,66 +1,36 @@
 import sys
-import numpy as np
 from pathlib import Path
-import random
 
 sys.path.append("/app")
 
 from api.app.database import SessionLocal
 from api.app.models import StyleAdapter
 from api.app.storage import get_storage
-from trainerlib.model import _parse_style_seed, _load_base_model, _pick_best_exemplar_sequence
-from api.app.settings import settings
+from trainerlib.model import generate_trajectory
+from trainerlib.svg import trajectory_to_svg
 
 db = SessionLocal()
 storage = get_storage()
 
-adapter = db.query(StyleAdapter).filter(StyleAdapter.id == 174).first()
+adapter = db.query(StyleAdapter).filter(StyleAdapter.id == 183).first()
 adapter_seed = storage.get_text(adapter.adapter_key)
 
-style_payload = _parse_style_seed(adapter_seed)
-user_char_exemplars_text = style_payload.get("user_char_exemplars_text")
+# Generate and save SVG for "い"
+traj_i = generate_trajectory("い", adapter_seed, "/app/storage/models/base_model.pt")
+svg_i = trajectory_to_svg(traj_i, "TEST_I")
+Path("/app/scratch/test_i.svg").write_text(svg_i, encoding="utf-8")
+print("Saved /app/scratch/test_i.svg")
 
-char = "あ"
-user_bucket = user_char_exemplars_text.get(char)
+# Generate and save SVG for "う"
+traj_u = generate_trajectory("う", adapter_seed, "/app/storage/models/base_model.pt")
+svg_u = trajectory_to_svg(traj_u, "TEST_U")
+Path("/app/scratch/test_u.svg").write_text(svg_u, encoding="utf-8")
+print("Saved /app/scratch/test_u.svg")
 
-rng = random.Random(42)
-seq_user = _pick_best_exemplar_sequence(user_bucket, rng, trials=28)
-seq = seq_user # Original (167 points)
-
-local = [(0.0, 0.0, "up", 2)]
-lx, ly = 0.0, 0.0
-for row in seq:
-    dx = float(row[0]) * 20.0
-    dy = float(row[1]) * 20.0
-    lx += dx
-    ly += dy
-    pen = "down" if float(row[2]) > 0.5 else "up"
-    width = int(round(max(0.2, min(1.2, float(row[3]))) * 4.0))
-    local.append((lx, ly, pen, max(1, min(4, width))))
-
-down_local = [(p[0], p[1]) for p in local if p[2] == "down"]
-xs = [p[0] for p in down_local]
-ys = [p[1] for p in down_local]
-min_x, max_x = min(xs), max(xs)
-min_y, max_y = min(ys), max(ys)
-span_x = max(1e-6, max_x - min_x)
-span_y = max(1e-6, max_y - min_y)
-
-scale_x = 51.0 / span_x
-scale_y = 51.0 / span_y
-
-grid = [[" " for _ in range(30)] for _ in range(30)]
-for lx_p, ly_p, pen, width in local:
-    if pen == "down":
-        tx = (lx_p - min_x) * scale_x
-        ty = (ly_p - min_y) * scale_y
-        gx = int(tx / 51.0 * 29)
-        gy = int(ty / 51.0 * 29)
-        if 0 <= gx < 30 and 0 <= gy < 30:
-            grid[gy][gx] = "*"
-            
-print("ASCII Plot of ORIGINAL 'あ' (No Resampling):")
-for row in grid:
-    print("".join(row))
+# Generate and save SVG for "お"
+traj_o = generate_trajectory("お", adapter_seed, "/app/storage/models/base_model.pt")
+svg_o = trajectory_to_svg(traj_o, "TEST_O")
+Path("/app/scratch/test_o.svg").write_text(svg_o, encoding="utf-8")
+print("Saved /app/scratch/test_o.svg")
 
 db.close()

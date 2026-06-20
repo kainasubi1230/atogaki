@@ -1,9 +1,10 @@
 import sys
-sys.path.append("/app")
-from api.app.database import SessionLocal
-from api.app.models import Dataset, StyleAdapter, Job
-from api.app.storage import get_storage
+sys.path.append("/app/api")
+from app.database import SessionLocal
+from app.models import Dataset, StyleAdapter, Job
+from app.storage import get_storage
 import json
+
 
 db = SessionLocal()
 storage = get_storage()

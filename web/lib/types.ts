@@ -4,6 +4,7 @@ export type HandwritingPath = {
   id: string;
   d: string;
   strokeWidth: number;
+  strokeOpacity?: number;
 };
 
 export type CanvasItem = {
