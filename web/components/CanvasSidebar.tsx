@@ -28,8 +28,6 @@ type Props = {
   savedColors: string[];
   saveColor: (color: string) => void;
   deleteSavedColor: (color: string) => void;
-  handleDownload: (format: "png" | "svg") => void;
-  isProcessing: boolean;
 };
 
 export function CanvasSidebar({
@@ -59,8 +57,6 @@ export function CanvasSidebar({
   savedColors,
   saveColor,
   deleteSavedColor,
-  handleDownload,
-  isProcessing,
 }: Props) {
   return (
     <>
@@ -571,58 +567,6 @@ export function CanvasSidebar({
             </div>
           </>
         )}
-
-        <hr className="sidebar-divider" />
-
-        <div className="sidebar-section">
-          <h3>ダウンロード</h3>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button
-              onClick={() => handleDownload("png")}
-              disabled={isProcessing}
-              className="tool-btn"
-              style={{ flex: 1, padding: "0.5rem 0", flexDirection: "row", gap: "6px" }}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              <span>PNG</span>
-            </button>
-            <button
-              onClick={() => handleDownload("svg")}
-              disabled={isProcessing}
-              className="tool-btn"
-              style={{ flex: 1, padding: "0.5rem 0", flexDirection: "row", gap: "6px" }}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              <span>SVG</span>
-            </button>
-          </div>
-        </div>
       </div>
     </>
   );

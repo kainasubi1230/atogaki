@@ -496,8 +496,7 @@ body {
   height: 70.71%; 
 }
 
-.paper::before {
-  content: "";
+.paper-pattern-overlay {
   position: absolute;
   top: 0;
   left: 0;
@@ -509,21 +508,21 @@ body {
   opacity: 0.5;
 }
 
-.paper.has-custom-image::before,
-.paper.has-custom-image::after {
-  display: none !important;
-}
-
 /* 2. Genkouyoushi (Japanese Grid) */
 .paper.style-genkouyoushi {
   background-color: #fcf8f2;
 }
-.paper.orientation-portrait.style-genkouyoushi::after {
-  content: "";
+
+.paper-genkouyoushi-grid {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.paper.orientation-portrait .paper-genkouyoushi-grid {
   height: 85%;
   aspect-ratio: 15 / 21;
   background-image:
@@ -532,16 +531,9 @@ body {
   background-size: calc(100% / 15) calc(100% / 21);
   border-right: 1px solid rgba(177, 58, 31, 0.4);
   border-bottom: 1px solid rgba(177, 58, 31, 0.4);
-  pointer-events: none;
-  z-index: 0;
 }
 
-.paper.orientation-landscape.style-genkouyoushi::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+.paper.orientation-landscape .paper-genkouyoushi-grid {
   width: 85%;
   aspect-ratio: 21 / 15;
   background-image:
@@ -550,36 +542,42 @@ body {
   background-size: calc(100% / 21) calc(100% / 15);
   border-right: 1px solid rgba(177, 58, 31, 0.4);
   border-bottom: 1px solid rgba(177, 58, 31, 0.4);
-  pointer-events: none;
-  z-index: 0;
 }
 
 /* 3. Airmail */
 .paper.style-airmail {
   background-color: #f8f9fa;
 }
-.paper.style-airmail::after {
-  content: "";
+
+.paper-airmail-container {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  border: 12px solid transparent;
-  border-image: repeating-linear-gradient(
-      -45deg,
-      #d93838,
-      #d93838 16px,
-      transparent 16px,
-      transparent 32px,
-      #245396 32px,
-      #245396 48px,
-      transparent 48px,
-      transparent 64px
-    )
-    12;
+  background: repeating-linear-gradient(
+    -45deg,
+    #d93838,
+    #d93838 16px,
+    #f8f9fa 16px,
+    #f8f9fa 32px,
+    #245396 32px,
+    #245396 48px,
+    #f8f9fa 48px,
+    #f8f9fa 64px
+  );
   pointer-events: none;
   z-index: 1;
+}
+
+.paper-airmail-inner {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  background-color: #f8f9fa;
+  pointer-events: none;
 }
 
 /* 4. Classic Lines */
@@ -592,8 +590,8 @@ body {
   background-size: 100% 2.5rem;
   background-position: 0 4rem; /* Starts below the margin */
 }
-.paper.style-lines::after {
-  content: "";
+
+.paper-lines-margin {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -601,7 +599,7 @@ body {
   width: 2px;
   background: rgba(220, 80, 80, 0.25);
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
 }
 
 /* 5. Plain Washi */
@@ -1371,6 +1369,100 @@ body {
   border-color: #3182ce;
   background: white;
   box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.15);
+}
+
+/* Top-Right Header Toolbar */
+.top-header-toolbar {
+  position: absolute;
+  top: 1.1rem;
+  right: 1.5rem;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.6rem;
+  pointer-events: none;
+}
+
+.top-header-toolbar > * {
+  pointer-events: auto;
+}
+
+.top-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 30px;
+  padding: 6px 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 16px -6px rgba(0, 0, 0, 0.03);
+}
+
+.top-toolbar-btn {
+  background: transparent;
+  border: none;
+  border-radius: 20px;
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.top-toolbar-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+  transform: translateY(-1px);
+}
+
+.top-toolbar-btn.active {
+  background: #f4eae1;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.top-toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.top-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 2px;
+}
+
+/* Expanded Coverage Panel styling */
+.coverage-details-card {
+  width: 320px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid #e6d2bf;
+  border-radius: 12px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  animation: slideDownFade 0.2s ease-out;
+}
+
+@keyframes slideDownFade {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 

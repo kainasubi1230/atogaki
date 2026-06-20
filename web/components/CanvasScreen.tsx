@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { CanvasItem } from "../lib/types";
 import { COLORS, PAPERS } from "../lib/constants";
-import { getJSON, postJSON } from "../lib/api";
+import { postJSON } from "../lib/api";
 import { useCanvasHistory } from "../hooks/useCanvasHistory";
 import { useCanvasInteraction } from "../hooks/useCanvasInteraction";
 import { ShojiOverlay } from "./ShojiOverlay";
@@ -39,26 +39,12 @@ type Props = {
   styleId: number | null;
 };
 
-type StyleCoverage = {
-  style_id: number;
-  status: string;
-  total_target_chars: number;
-  covered_count: number;
-  missing_count: number;
-  covered_chars: string;
-  missing_hiragana: string;
-  missing_katakana: string;
-  missing_kanji_core: string;
-};
-
 export function CanvasScreen({ token, userId, styleId }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"paper" | "write">("paper");
   const [customColor, setCustomColor] = useState("#ff6600");
   const [savedColors, setSavedColors] = useState<string[]>([]);
-  const [coverage, setCoverage] = useState<StyleCoverage | null>(null);
-  const [coverageLoading, setCoverageLoading] = useState(false);
   const [activeMotions, setActiveMotions] = useState<string[]>([]);
 
   const [isExporting, setIsExporting] = useState(false);
@@ -213,9 +199,32 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
   const handleDownload = async (format: "png" | "svg") => {
     if (!paperRef.current) return;
+
+    // 1. Temporarily clear selections to hide selection borders/controls
+    const prevSelectedIds = [...selectedIds];
+    const prevSelectedId = selectedId;
+    setSelectedIds([]);
+    setSelectedId(null);
+
     setIsExporting(true);
 
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // 2. Wait for React render and browser reflow to complete (hiding handles and empty textboxes)
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // 3. Lock layout size to unscaled pixels to prevent flex container and stylesheet detach reflows
+    const rect = paperRef.current.getBoundingClientRect();
+    const unscaledWidth = rect.width;
+    const unscaledHeight = rect.height;
+
+    const originalWidth = paperRef.current.style.width;
+    const originalHeight = paperRef.current.style.height;
+    const originalAspectRatio = paperRef.current.style.aspectRatio;
+    const originalTransform = paperRef.current.style.transform;
+
+    paperRef.current.style.width = `${unscaledWidth}px`;
+    paperRef.current.style.height = `${unscaledHeight}px`;
+    paperRef.current.style.aspectRatio = "auto";
+    paperRef.current.style.transform = "none";
 
     const stylesheets = Array.from(document.querySelectorAll("link[rel='stylesheet'], style"));
     const detachedStylesheets: { element: Element; parent: Node; nextSibling: Node | null }[] = [];
@@ -241,13 +250,21 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
 
     try {
       const { toPng, toSvg } = await import("html-to-image");
+      const now = new Date();
+      const MM = String(now.getMonth() + 1).padStart(2, "0");
+      const DD = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+      const filename = `atogaki-${MM}${DD}${hh}${mm}${ss}`;
+
       if (format === "png") {
         const dataUrl = await toPng(paperRef.current, {
           quality: 0.98,
           backgroundColor: "#faf8f5",
         });
         const link = document.createElement("a");
-        link.download = `handwriting-${Date.now()}.png`;
+        link.download = `${filename}.png`;
         link.href = dataUrl;
         link.click();
       } else {
@@ -255,7 +272,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
           backgroundColor: "#faf8f5",
         });
         const link = document.createElement("a");
-        link.download = `handwriting-${Date.now()}.svg`;
+        link.download = `${filename}.svg`;
         link.href = dataUrl;
         link.click();
       }
@@ -263,9 +280,18 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       console.error("Export failed:", error);
       alert("画像のダウンロードに失敗しました。");
     } finally {
+      // 4. Restore style and selection states
+      paperRef.current.style.width = originalWidth;
+      paperRef.current.style.height = originalHeight;
+      paperRef.current.style.aspectRatio = originalAspectRatio;
+      paperRef.current.style.transform = originalTransform;
+
       detachedStylesheets.forEach(({ element, parent, nextSibling }) => {
         parent.insertBefore(element, nextSibling);
       });
+
+      setSelectedIds(prevSelectedIds);
+      setSelectedId(prevSelectedId);
       setIsExporting(false);
     }
   };
@@ -696,42 +722,7 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
       }
     : {};
 
-  useEffect(() => {
-    async function fetchCoverage() {
-      if (!token || !userId || !styleId) {
-        setCoverage(null);
-        return;
-      }
-      setCoverageLoading(true);
-      try {
-        const res = await getJSON(`/styles/${styleId}/coverage`, token);
-        if (res.status === 200) {
-          setCoverage(res.body as StyleCoverage);
-        } else {
-          setCoverage(null);
-        }
-      } finally {
-        setCoverageLoading(false);
-      }
-    }
-    fetchCoverage();
-  }, [token, userId, styleId]);
 
-  const missingGuide =
-    coverage &&
-    [coverage.missing_hiragana, coverage.missing_katakana, coverage.missing_kanji_core]
-      .filter((s) => s && s.length > 0)
-      .join("\n");
-
-  const copyMissingGuide = async () => {
-    if (!missingGuide) return;
-    try {
-      await navigator.clipboard.writeText(missingGuide);
-      alert("不足文字をコピーしました。練習シートに貼り付けて使えます。");
-    } catch {
-      alert("コピーに失敗しました");
-    }
-  };
 
   return (
     <div className="canvas-screen animate-fade-in" style={{ position: "relative" }}>
@@ -762,70 +753,41 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
         savedColors={savedColors}
         saveColor={saveColor}
         deleteSavedColor={deleteSavedColor}
-        handleDownload={handleDownload}
-        isProcessing={isProcessing}
       />
 
       <div className="canvas-main">
-        {styleId && (
-          <div
-            style={{
-              position: "absolute",
-              top: "1.1rem",
-              right: "1.5rem",
-              zIndex: 101,
-              maxWidth: "500px",
-              background: "rgba(255,255,255,0.95)",
-              border: "1px solid #e6d2bf",
-              borderRadius: "12px",
-              padding: "0.7rem 0.85rem",
-              boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
-              fontSize: "0.82rem",
-              lineHeight: 1.4,
-            }}
-          >
-            {coverageLoading ? (
-              <div>文字カバレッジ確認中...</div>
-            ) : coverage ? (
-              <>
-                <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
-                  文字カバレッジ {coverage.covered_count}/{coverage.total_target_chars}
-                </div>
-                <div style={{ color: "var(--text-secondary)" }}>
-                  不足: {coverage.missing_count} 文字
-                </div>
-                {coverage.missing_hiragana && (
-                  <div style={{ marginTop: "0.35rem" }}>
-                    <span style={{ fontWeight: 600 }}>不足ひらがな:</span> {coverage.missing_hiragana}
-                  </div>
-                )}
-                {coverage.missing_katakana && (
-                  <div style={{ marginTop: "0.22rem" }}>
-                    <span style={{ fontWeight: 600 }}>不足カタカナ:</span> {coverage.missing_katakana}
-                  </div>
-                )}
-                {coverage.missing_kanji_core && (
-                  <div style={{ marginTop: "0.22rem" }}>
-                    <span style={{ fontWeight: 600 }}>不足漢字(コア):</span> {coverage.missing_kanji_core}
-                  </div>
-                )}
-                {!!missingGuide && (
-                  <button
-                    className="tool-btn"
-                    style={{ marginTop: "0.55rem", width: "100%" }}
-                    onClick={copyMissingGuide}
-                  >
-                    不足文字をコピー
-                  </button>
-                )}
-              </>
-            ) : (
-              <div style={{ color: "var(--text-secondary)" }}>
-                カバレッジ情報を取得できませんでした。
-              </div>
-            )}
+        {/* Top-Right Header Toolbar */}
+        <div className="top-header-toolbar">
+          <div className="top-toolbar-row">
+            <button
+              className="top-toolbar-btn"
+              onClick={() => handleDownload("png")}
+              disabled={isProcessing}
+              title="キャンバスをPNG画像としてダウンロード"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>PNG保存</span>
+            </button>
+
+            <button
+              className="top-toolbar-btn"
+              onClick={() => handleDownload("svg")}
+              disabled={isProcessing}
+              title="キャンバスをSVG画像としてダウンロード"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>SVG保存</span>
+            </button>
           </div>
-        )}
+        </div>
 
         <div
           ref={paperRef}
@@ -838,36 +800,56 @@ export function CanvasScreen({ token, userId, styleId }: Props) {
               ? "none"
               : `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
             transformOrigin: "center center",
-            transition: isPanning ? "none" : "transform 0.15s ease-out",
+            transition: isExporting || isPanning ? "none" : "transform 0.15s ease-out",
             ...customImageStyle,
           }}
           onPointerDown={handlePaperClick}
           onPointerMove={handlePaperPointerMove}
           onPointerUp={handlePaperPointerUp}
         >
-          {items.map((rawItem) => {
-            const item = punctuationRenderItem(rawItem);
-            const isSelected = selectedIds.includes(item.id);
-            return (
-              <DraggableItem
-                key={item.id}
-                item={item}
-                isSelected={isSelected}
-                selectedId={selectedId}
-                selectedIds={selectedIds}
-                setSelectedIds={setSelectedIds}
-                paperStyle={paperStyle}
-                isProcessing={isProcessing}
-                setItems={setItems}
-                commitHistory={commitHistory}
-                handlePointerDown={handlePointerDown}
-                handleResizeStart={handleResizeStart}
-                handleRotateStart={handleRotateStart}
-                deleteItem={deleteItem}
-                isPanningActive={activeTool === "hand" || isSpacePanning}
-              />
-            );
-          })}
+          {/* Background decorations for reliable HTML-to-Image serialization */}
+          {!selectedPaperDef.image && (
+            <>
+              <div className="paper-pattern-overlay" />
+              {paperStyle === "airmail" && (
+                <div className="paper-airmail-container">
+                  <div className="paper-airmail-inner" />
+                </div>
+              )}
+              {paperStyle === "lines" && (
+                <div className="paper-lines-margin" />
+              )}
+              {paperStyle === "genkouyoushi" && (
+                <div className="paper-genkouyoushi-grid" />
+              )}
+            </>
+          )}
+
+          {items
+            .filter((it) => !(isExporting && it.type === "text" && it.text.trim() === ""))
+            .map((rawItem) => {
+              const item = punctuationRenderItem(rawItem);
+              const isSelected = selectedIds.includes(item.id);
+              return (
+                <DraggableItem
+                  key={item.id}
+                  item={item}
+                  isSelected={isSelected}
+                  selectedId={selectedId}
+                  selectedIds={selectedIds}
+                  setSelectedIds={setSelectedIds}
+                  paperStyle={paperStyle}
+                  isProcessing={isProcessing}
+                  setItems={setItems}
+                  commitHistory={commitHistory}
+                  handlePointerDown={handlePointerDown}
+                  handleResizeStart={handleResizeStart}
+                  handleRotateStart={handleRotateStart}
+                  deleteItem={deleteItem}
+                  isPanningActive={activeTool === "hand" || isSpacePanning}
+                />
+              );
+            })}
 
           {marqueeStart && marqueeEnd && (
             <div
