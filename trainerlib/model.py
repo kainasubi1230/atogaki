@@ -918,6 +918,82 @@ def _is_latin_char(ch: str) -> bool:
     return ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 
+def _is_kanji_char(ch: str) -> bool:
+    if len(ch) != 1:
+        return False
+    code = ord(ch)
+    return (
+        0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+    )
+
+
+def _get_user_width_ratio(metadata: dict[str, Any], vocab_size: int) -> float:
+    user_char_exemplars = metadata.get("user_char_exemplars")
+    user_char_exemplars_text = metadata.get("user_char_exemplars_text")
+    base_char_exemplars = metadata.get("base_char_exemplars")
+    base_char_exemplars_text = metadata.get("base_char_exemplars_text")
+    
+    user_widths = []
+    matched_chars = []
+    
+    if isinstance(user_char_exemplars_text, dict):
+        for char, bucket in user_char_exemplars_text.items():
+            if bucket:
+                for seq in bucket:
+                    for pt in seq:
+                        if len(pt) >= 4:
+                            user_widths.append(float(pt[3]))
+                matched_chars.append(char)
+                
+    if not user_widths and isinstance(user_char_exemplars, dict):
+        for char_id_str, bucket in user_char_exemplars.items():
+            if bucket:
+                for seq in bucket:
+                    for pt in seq:
+                        if len(pt) >= 4:
+                            user_widths.append(float(pt[3]))
+                            
+    if not user_widths:
+        return 1.0
+        
+    avg_user_w = sum(user_widths) / len(user_widths)
+    
+    base_widths = []
+    for char in matched_chars:
+        base_seq = _get_cached_base_exemplar(char)
+        if base_seq:
+            for pt in base_seq:
+                if len(pt) >= 4:
+                    base_widths.append(float(pt[3]))
+                    
+    if not base_widths:
+        if isinstance(base_char_exemplars_text, dict):
+            for char, bucket in base_char_exemplars_text.items():
+                if bucket:
+                    for seq in bucket:
+                        for pt in seq:
+                            if len(pt) >= 4:
+                                base_widths.append(float(pt[3]))
+        if not base_widths and isinstance(base_char_exemplars, dict):
+            for char_id_str, bucket in base_char_exemplars.items():
+                if bucket:
+                    for seq in bucket:
+                        for pt in seq:
+                            if len(pt) >= 4:
+                                base_widths.append(float(pt[3]))
+                                
+    if not base_widths:
+        return 1.0
+        
+    avg_base_w = sum(base_widths) / len(base_widths)
+    if avg_base_w <= 0.01:
+        return 1.0
+        
+    return avg_user_w / avg_base_w
+
+
 _STANDARD_STROKE_COUNTS = {
     # Hiragana
     "あ": 3, "い": 2, "う": 2, "え": 2, "お": 3,
@@ -1661,6 +1737,8 @@ def _trajectory_from_exemplar(
     y_offset = 46.0 + rng.uniform(-0.8, 0.8)
     t = 0
 
+    user_width_ratio = _get_user_width_ratio(metadata, vocab_size)
+
     style_cfg = style_profile if isinstance(style_profile, dict) else {}
     raw_scale_x = 1.0
     raw_scale_y = 1.0
@@ -1674,7 +1752,18 @@ def _trajectory_from_exemplar(
     for char in text:
         is_katakana = _is_katakana_char(char)
         is_latin = _is_latin_char(char)
-        char_correction = max(0.92, correction) if is_latin else correction
+        is_kanji = _is_kanji_char(char)
+        
+        if is_latin:
+            char_correction = max(0.92, correction)
+        elif is_katakana:
+            # カタカナの崩れを抑制するため、基本データセットを強めに参照 (最低 82%)
+            char_correction = max(0.82, correction)
+        elif is_kanji:
+            # 漢字に手書きの癖を導入しやすくするため、補正率を 75% に抑制
+            char_correction = correction * 0.75
+        else:
+            char_correction = correction
 
         c_scale_x_bias = raw_scale_x
         c_scale_y_bias = raw_scale_y
@@ -1814,7 +1903,10 @@ def _trajectory_from_exemplar(
             # Guard against accidental long "down" jumps; treat them as pen-up moves.
             if pen == "down" and (abs(dx) > 14.0 or abs(dy) > 14.0):
                 pen = "up"
-            width = int(round(max(0.2, min(1.5, float(row[3]) * width_scale_boosted)) * 4.0))
+            scaled_w = float(row[3])
+            if seq_user is None:
+                scaled_w *= user_width_ratio
+            width = int(round(max(0.2, min(1.5, scaled_w * width_scale_boosted)) * 4.0))
             local.append((lx, ly, pen, max(1, min(5, width))))
 
         down_local = [(p[0], p[1]) for p in local if p[2] == "down"]
