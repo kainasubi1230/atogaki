@@ -1204,6 +1204,177 @@ body {
   background: transparent !important;
 }
 
+/* Selection corner dots (PowerPoint style) */
+.selection-corner-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background-color: white;
+  border: 1.5px solid rgba(66, 153, 225, 1);
+  border-radius: 50%;
+  z-index: 18;
+}
+
+/* Offset positioning relative to outline-offset (3px) and dot radius (4px) */
+.selection-corner-dot.top-left {
+  top: -7px;
+  left: -7px;
+}
+
+.selection-corner-dot.top-right {
+  top: -7px;
+  right: -7px;
+}
+
+.selection-corner-dot.bottom-left {
+  bottom: -7px;
+  left: -7px;
+}
+
+.selection-corner-dot.bottom-right {
+  bottom: -7px;
+  right: -7px;
+}
+
+.paper.exporting .selection-corner-dot {
+  display: none !important;
+}
+
+/* Shoji shadow motions configuration */
+.shoji-overlay.has-shadow-motions .shoji-cell {
+  background-color: rgba(254, 252, 247, 0.82); /* make washi paper more transparent for shadows */
+  transition: background-color 0.6s ease;
+}
+
+.shoji-shadow-silhouette {
+  position: absolute;
+  color: rgba(10, 10, 10, 0.55);
+  filter: blur(10px);
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* 1. Car driving silhouette */
+.shoji-shadow-car {
+  bottom: 120px;
+  left: -580px;
+  animation: carDrive 5s linear infinite;
+}
+
+@keyframes carDrive {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(100vw + 640px));
+  }
+}
+
+/* 2. Cloud floating silhouette */
+.shoji-shadow-cloud {
+  top: 150px;
+  left: -500px;
+  animation: cloudFloat 10s linear infinite;
+  opacity: 0.75;
+}
+
+@keyframes cloudFloat {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(100vw + 560px));
+  }
+}
+
+/* Floating Zoom Panel */
+.zoom-panel {
+  position: absolute;
+  bottom: 2rem;
+  left: 2rem;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 30px;
+  padding: 6px 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 16px -6px rgba(0, 0, 0, 0.03);
+  transition: all 0.3s ease;
+}
+
+.zoom-panel-btn {
+  background: transparent;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.zoom-panel-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  transform: scale(1.08);
+}
+
+.zoom-panel-btn.active {
+  background: var(--text-primary);
+  color: var(--paper-bg);
+}
+
+.zoom-panel-indicator {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 48px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  padding: 0 4px;
+}
+
+.zoom-panel-indicator:hover {
+  color: #3182ce;
+}
+
+.zoom-panel-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 2px;
+}
+
+.zoom-panel-input {
+  width: 48px;
+  text-align: center;
+  font-size: 0.85rem;
+  font-family: inherit;
+  font-weight: 600;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.03);
+  padding: 2px 0;
+  outline: none;
+  color: var(--text-primary);
+  transition: all 0.15s ease;
+}
+
+.zoom-panel-input:focus {
+  border-color: #3182ce;
+  background: white;
+  box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.15);
+}
+
+
+
 
 
 
