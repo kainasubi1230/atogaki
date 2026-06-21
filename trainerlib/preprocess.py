@@ -562,6 +562,8 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                         allowed = True
                     elif gap <= 16 and potential_width <= temp_step_x * 0.80:
                         allowed = True
+                    elif gap <= temp_step_x * 0.42 and potential_width <= temp_step_x * 0.82:
+                        allowed = True
                         
                     if allowed:
                         prev["x1"] = max(prev["x1"], comp["x1"])
@@ -669,6 +671,8 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 elif gap <= 3:  # almost touching, must merge
                     allowed = True
                 elif gap <= 16 and potential_width <= step_x * 0.80:  # split stroke with larger gap
+                    allowed = True
+                elif gap <= step_x * 0.42 and potential_width <= step_x * 0.82:  # larger gap for very narrow components (e.g. split は/ほ)
                     allowed = True
                     
                 if allowed:
