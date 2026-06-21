@@ -1255,7 +1255,7 @@ body {
 /* 1. Car driving silhouette */
 .shoji-shadow-car {
   bottom: 120px;
-  left: -580px;
+  left: -700px;
   animation: carDrive 5s linear infinite;
 }
 
@@ -1264,14 +1264,14 @@ body {
     transform: translateX(0);
   }
   100% {
-    transform: translateX(calc(100vw + 640px));
+    transform: translateX(calc(100vw + 750px));
   }
 }
 
 /* 2. Cloud floating silhouette */
 .shoji-shadow-cloud {
   top: 150px;
-  left: -500px;
+  left: -620px;
   animation: cloudFloat 10s linear infinite;
   opacity: 0.75;
 }
@@ -1281,7 +1281,245 @@ body {
     transform: translateX(0);
   }
   100% {
-    transform: translateX(calc(100vw + 560px));
+    transform: translateX(calc(100vw + 700px));
+  }
+}
+
+/* 3. Airplane gliding silhouette */
+.shoji-shadow-airplane {
+  top: 80px;
+  left: -600px;
+  animation: airplaneTranslateX 7s linear infinite;
+  opacity: 0.8;
+}
+
+.shoji-shadow-airplane svg {
+  animation: airplaneGlide 4s ease-in-out infinite alternate;
+}
+
+@keyframes airplaneTranslateX {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(100vw + 650px));
+  }
+}
+
+@keyframes airplaneGlide {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-20px);
+  }
+}
+
+/* 4. Ship sailing silhouette */
+.shoji-shadow-ship {
+  bottom: 60px;
+  left: -500px;
+  animation: shipTranslateX 12s linear infinite;
+  opacity: 0.85;
+}
+
+.shoji-shadow-ship svg {
+  animation: shipRock 3s ease-in-out infinite alternate;
+  transform-origin: center bottom;
+}
+
+@keyframes shipTranslateX {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(100vw + 550px));
+  }
+}
+
+@keyframes shipRock {
+  0% {
+    transform: rotate(-3deg) translateY(0);
+  }
+  100% {
+    transform: rotate(3deg) translateY(2px);
+  }
+}
+
+/* 5. Runner jogging silhouette */
+.shoji-shadow-runner {
+  bottom: 40px;
+  left: -350px;
+  animation: runnerTranslateX 6s linear infinite;
+  opacity: 0.9;
+}
+
+.shoji-shadow-runner svg {
+  animation: runnerBob 0.6s ease-in-out infinite alternate;
+}
+
+/* Runner joint rotations (hierarchical/skeletal) */
+.runner-upperarm-left,
+.runner-forearm-left,
+.runner-upperarm-right,
+.runner-forearm-right,
+.runner-thigh-left,
+.runner-calf-left,
+.runner-thigh-right,
+.runner-calf-right,
+.runner-body {
+  transform-box: view-box;
+}
+
+.runner-upperarm-left {
+  transform-origin: 52px 24px;
+  animation: runnerUpperArmSwingLeft 0.6s ease-in-out infinite alternate;
+}
+
+.runner-forearm-left {
+  transform-origin: 62px 30px;
+  animation: runnerForearmBendLeft 0.6s ease-in-out infinite alternate;
+}
+
+.runner-upperarm-right {
+  transform-origin: 52px 24px;
+  animation: runnerUpperArmSwingRight 0.6s ease-in-out infinite alternate;
+}
+
+.runner-forearm-right {
+  transform-origin: 40px 28px;
+  animation: runnerForearmBendRight 0.6s ease-in-out infinite alternate;
+}
+
+.runner-thigh-left {
+  transform-origin: 46px 45px;
+  animation: runnerThighSwingLeft 0.6s ease-in-out infinite alternate;
+}
+
+.runner-calf-left {
+  transform-origin: 54px 58px;
+  animation: runnerCalfBendLeft 0.6s ease-in-out infinite alternate;
+}
+
+.runner-thigh-right {
+  transform-origin: 46px 45px;
+  animation: runnerThighSwingRight 0.6s ease-in-out infinite alternate;
+}
+
+.runner-calf-right {
+  transform-origin: 36px 54px;
+  animation: runnerCalfBendRight 0.6s ease-in-out infinite alternate;
+}
+
+.runner-body {
+  transform-origin: 46px 45px;
+  animation: runnerBodyTilt 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes runnerTranslateX {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(100vw + 400px));
+  }
+}
+
+@keyframes runnerBob {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-12px);
+  }
+}
+
+/* Left Arm Swing (pumps forward) */
+@keyframes runnerUpperArmSwingLeft {
+  0% {
+    transform: rotate(50deg);
+  }
+  100% {
+    transform: rotate(-45deg);
+  }
+}
+
+/* Left Forearm Bend (elbow closes when pumping forward, opens when going back) */
+@keyframes runnerForearmBendLeft {
+  0% {
+    transform: rotate(60deg);
+  }
+  100% {
+    transform: rotate(15deg);
+  }
+}
+
+/* Right Arm Swing (opposite phase of Left Arm) */
+@keyframes runnerUpperArmSwingRight {
+  0% {
+    transform: rotate(-45deg);
+  }
+  100% {
+    transform: rotate(50deg);
+  }
+}
+
+/* Right Forearm Bend */
+@keyframes runnerForearmBendRight {
+  0% {
+    transform: rotate(15deg);
+  }
+  100% {
+    transform: rotate(60deg);
+  }
+}
+
+/* Left Thigh Swing */
+@keyframes runnerThighSwingLeft {
+  0% {
+    transform: rotate(-35deg);
+  }
+  100% {
+    transform: rotate(40deg);
+  }
+}
+
+/* Left Calf Bend (bends back for high kick at 0% when thigh is back; extends at 100% when thigh is front) */
+@keyframes runnerCalfBendLeft {
+  0% {
+    transform: rotate(-70deg);
+  }
+  100% {
+    transform: rotate(15deg);
+  }
+}
+
+/* Right Thigh Swing */
+@keyframes runnerThighSwingRight {
+  0% {
+    transform: rotate(40deg);
+  }
+  100% {
+    transform: rotate(-35deg);
+  }
+}
+
+/* Right Calf Bend */
+@keyframes runnerCalfBendRight {
+  0% {
+    transform: rotate(15deg);
+  }
+  100% {
+    transform: rotate(-70deg);
+  }
+}
+
+@keyframes runnerBodyTilt {
+  0% {
+    transform: rotate(-3deg);
+  }
+  100% {
+    transform: rotate(3deg);
   }
 }
 
