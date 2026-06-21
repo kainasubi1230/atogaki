@@ -2021,6 +2021,22 @@ def _trajectory_from_exemplar(
             else:
                 seq = seq_user
             is_raw_user = True
+        elif seq_model and seq_base and char_correction > 0.0:
+            # Morph model-predicted sequence with base sequence to stabilize shape
+            strokes_m = _merge_fragmented_strokes(_seq_to_strokes(seq_model))
+            strokes_b = _merge_fragmented_strokes(_seq_to_strokes(seq_base))
+            if len(strokes_m) == len(strokes_b):
+                morphed_strokes = _morph_strokes(strokes_m, strokes_b, char_correction, char=char)
+                seq = _strokes_to_seq(morphed_strokes)
+            else:
+                repaired_model = _infer_pen_lifts_from_geometry(seq_model, len(strokes_b))
+                strokes_m_repaired = _merge_fragmented_strokes(_seq_to_strokes(repaired_model))
+                if len(strokes_m_repaired) == len(strokes_b):
+                    morphed_strokes = _morph_strokes(strokes_m_repaired, strokes_b, char_correction, char=char)
+                    seq = _strokes_to_seq(morphed_strokes)
+                else:
+                    morphed_strokes = _morph_strokes(strokes_m, strokes_b, char_correction, char=char)
+                    seq = _strokes_to_seq(morphed_strokes)
         else:
             seq = seq_base
 
