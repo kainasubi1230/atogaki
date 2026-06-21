@@ -20,12 +20,12 @@ TOO_FEW_SEGMENTS = "TOO_FEW_SEGMENTS"
 ROW_TEMPLATES = [
     list("あいうえおかきくけこさしすせそ"), # Row 1
     list("たちつてとなにぬねのはひふへほ"), # Row 2
-    list("まみむめもや ゆ よらりるれろ"), # Row 3
-    ["わ", "", "", "を", "", "", "ん"] + [""] * 8, # Row 4
+    ["ま", "み", "む", "め", "も", "や", "", "ゆ", "", "よ", "ら", "り", "る", "れ", "ろ"], # Row 3
+    ["わ", "", "", "を", "", "ん", ""] + [""] * 8, # Row 4
     list("アイウエオカキクケコサシスセソ"), # Row 5
     list("タチツテトナニヌネノハヒフヘホ"), # Row 6
-    list("マミムメモヤ ユ ヨラリルレロ"), # Row 7
-    ["ワ", "", "", "ヲ", "", "", "ン"] + [""] * 8  # Row 8
+    ["マ", "ミ", "ム", "メ", "モ", "ヤ", "", "ユ", "", "ヨ", "ラ", "リ", "ル", "レ", "ロ"], # Row 7
+    ["ワ", "", "", "ヲ", "", "ン", ""] + [""] * 8  # Row 8
 ]
 
 # Narrow kana tend to look oversized when the crop is normalized too hard.
@@ -59,6 +59,7 @@ _SPLIT_STROKE_LABELS = {
     "り",
     "か",
     "や",
+    "ふ",
     "ハ",
     "リ",
     "シ",
@@ -414,8 +415,8 @@ def _stroke_from_mask(mask: np.ndarray, force_profile: str | None = None, min_co
         w = max(1, min(4, int(round(float(row[3]) * 4.0))))
         points.append(
             {
-                "x": int(round(x)),
-                "y": int(round(y)),
+                "x": round(float(x), 3),
+                "y": round(float(y), 3),
                 "t": t,
                 "pen_state": "down" if pen_down else "up",
                 "width": w,
@@ -527,14 +528,88 @@ def preprocess_scan(image_bytes: bytes) -> dict:
     for c in raw_components:
         c["center_x_corr"] = c["center_x"] - (c["center_y"] - y_ref) * dx_dy
 
-    # Centroids initialization for 15 columns using 2%-98% percentile range
+    # Centroids initialization for 15 columns using robust geometry and gap-based estimation
     all_xs = [c["center_x_corr"] for r in valid_rows for c in r]
     if all_xs:
         all_xs_sorted = sorted(all_xs)
-        p1 = all_xs_sorted[int(len(all_xs_sorted) * 0.02)]
-        p99 = all_xs_sorted[int(len(all_xs_sorted) * 0.98)]
-        step_x = (p99 - p1) / 14.0
-        offset_x = p1
+        left_bound = w_img * 0.08
+        grid_xs = [x for x in all_xs_sorted if x >= left_bound]
+        if grid_xs:
+            p1 = grid_xs[int(len(grid_xs) * 0.05)]
+            grid_xs_filtered = [x for x in grid_xs if x <= p1 + 975.0]
+            p99 = grid_xs_filtered[int(len(grid_xs_filtered) * 0.95)]
+            temp_step_x = (p99 - p1) / 14.0
+        else:
+            p1 = 85.0
+            temp_step_x = 43.5
+
+        # First-pass merge to estimate true step_x using component gaps
+        all_merged_rows = []
+        for r in valid_rows:
+            raw_char_comps = sorted(r, key=lambda x: x["x0"])
+            merged_comps = []
+            for comp in raw_char_comps:
+                if not merged_comps:
+                    merged_comps.append(dict(comp))
+                else:
+                    prev = merged_comps[-1]
+                    gap = comp["x0"] - prev["x1"]
+                    potential_width = max(prev["x1"], comp["x1"]) - min(prev["x0"], comp["x0"])
+                    allowed = False
+                    if gap <= 8 and potential_width <= temp_step_x * 0.88:
+                        allowed = True
+                    elif gap <= 3:
+                        allowed = True
+                    elif gap <= 16 and potential_width <= temp_step_x * 0.80:
+                        allowed = True
+                        
+                    if allowed:
+                        prev["x1"] = max(prev["x1"], comp["x1"])
+                        prev["y0"] = min(prev["y0"], comp["y0"])
+                        prev["y1"] = max(prev["y1"], comp["y1"])
+                        prev["width"] = prev["x1"] - prev["x0"]
+                        prev["height"] = prev["y1"] - prev["y0"]
+                        prev["center_x"] = (prev["x0"] + prev["x1"]) / 2.0
+                        prev["center_y"] = (prev["y0"] + prev["y1"]) / 2.0
+                        prev["center_x_corr"] = prev["center_x"] - (prev["center_y"] - y_ref) * dx_dy
+                    else:
+                        merged_comps.append(dict(comp))
+            all_merged_rows.append(merged_comps)
+
+        all_gaps = []
+        for merged_r in all_merged_rows:
+            sorted_r = sorted(merged_r, key=lambda c: c["center_x_corr"])
+            for i in range(len(sorted_r) - 1):
+                g = sorted_r[i+1]["center_x_corr"] - sorted_r[i]["center_x_corr"]
+                all_gaps.append(g)
+
+        all_gaps = sorted(all_gaps)
+        filtered_gaps = [g for g in all_gaps if 40.0 <= g <= 70.0]
+        if filtered_gaps:
+            step_x = float(np.median(filtered_gaps))
+        else:
+            step_x = temp_step_x
+            if step_x < 35.0 or step_x > 75.0:
+                step_x = 52.0
+
+        # Modulo alignment voting to find refined offset_x
+        rough_offset = w_img * 0.122
+        candidates = np.arange(rough_offset - step_x / 2.0, rough_offset + step_x / 2.0, 0.5)
+        best_offset = rough_offset
+        min_score = 1e9
+        flat_comps = [c for r in valid_rows for c in r]
+        for cand in candidates:
+            score = 0.0
+            for c in flat_comps:
+                cx = c["center_x_corr"]
+                dist = abs((cx - cand) % step_x)
+                dist = min(dist, step_x - dist)
+                score += dist
+            if score < min_score:
+                min_score = score
+                best_offset = cand
+                
+        offset_x = float(best_offset)
         centroids = [offset_x + i * step_x for i in range(15)]
     else:
         step_x = 43.5
@@ -575,9 +650,45 @@ def preprocess_scan(image_bytes: bytes) -> dict:
         row_bottom = min(h_img, row_bottom + row_pad)
         raw_char_comps = sorted(r, key=lambda x: x["x0"])
         
-        # Split wide components (two characters merged) before DP alignment
-        raw_char_comps_split = []
+        # Merge components horizontally with gap <= 8 pixels FIRST to prevent multi-stroke character fragmentation.
+        # Use width-constrained merging to avoid merging adjacent characters into massive blocks.
+        merged_comps = []
         for comp in raw_char_comps:
+            if not merged_comps:
+                merged_comps.append(dict(comp))
+            else:
+                prev = merged_comps[-1]
+                gap = comp["x0"] - prev["x1"]
+                
+                potential_width = max(prev["x1"], comp["x1"]) - min(prev["x0"], comp["x0"])
+                
+                # Check merge criteria
+                allowed = False
+                if gap <= 8 and potential_width <= step_x * 0.88:
+                    allowed = True
+                elif gap <= 3:  # almost touching, must merge
+                    allowed = True
+                elif gap <= 16 and potential_width <= step_x * 0.80:  # split stroke with larger gap
+                    allowed = True
+                    
+                if allowed:
+                    prev["x1"] = max(prev["x1"], comp["x1"])
+                    prev["y0"] = min(prev["y0"], comp["y0"])
+                    prev["y1"] = max(prev["y1"], comp["y1"])
+                    prev["width"] = prev["x1"] - prev["x0"]
+                    prev["height"] = prev["y1"] - prev["y0"]
+                    prev["center_x"] = (prev["x0"] + prev["x1"]) / 2.0
+                    prev["center_y"] = (prev["y0"] + prev["y1"]) / 2.0
+                    if "ids" not in prev:
+                        prev["ids"] = {prev.get("id")} if prev.get("id") is not None else set()
+                    if comp.get("id") is not None:
+                        prev["ids"].add(comp["id"])
+                else:
+                    merged_comps.append(dict(comp))
+
+        # Split wide components (two characters merged) AFTER merging to handle touching characters robustly
+        final_comps = []
+        for comp in merged_comps:
             w = comp["x1"] - comp["x0"]
             if w > step_x * 1.35:
                 split_count = max(2, int(round(w / step_x)))
@@ -594,36 +705,16 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                         "height": comp["height"],
                         "center_y": comp["center_y"],
                         "center_x": (s_x0 + s_x1) / 2.0,
-                        "id": comp.get("id")
                     }
-                    raw_char_comps_split.append(sub_comp)
+                    if "ids" in comp:
+                        sub_comp["ids"] = set(comp["ids"])
+                    elif comp.get("id") is not None:
+                        sub_comp["id"] = comp["id"]
+                    final_comps.append(sub_comp)
             else:
-                raw_char_comps_split.append(comp)
+                final_comps.append(comp)
 
-        # Merge components horizontally with gap <= 8 pixels to prevent multi-stroke character fragmentation
-        merged_comps = []
-        for comp in sorted(raw_char_comps_split, key=lambda x: x["x0"]):
-            if not merged_comps:
-                merged_comps.append(dict(comp))
-            else:
-                prev = merged_comps[-1]
-                gap = comp["x0"] - prev["x1"]
-                if gap <= 8:
-                    prev["x1"] = max(prev["x1"], comp["x1"])
-                    prev["y0"] = min(prev["y0"], comp["y0"])
-                    prev["y1"] = max(prev["y1"], comp["y1"])
-                    prev["width"] = prev["x1"] - prev["x0"]
-                    prev["height"] = prev["y1"] - prev["y0"]
-                    prev["center_x"] = (prev["x0"] + prev["x1"]) / 2.0
-                    prev["center_y"] = (prev["y0"] + prev["y1"]) / 2.0
-                    if "ids" not in prev:
-                        prev["ids"] = {prev.get("id")} if prev.get("id") is not None else set()
-                    if comp.get("id") is not None:
-                        prev["ids"].add(comp["id"])
-                else:
-                    merged_comps.append(dict(comp))
-
-        char_comps = merged_comps
+        char_comps = final_comps
 
         for c in char_comps:
             c["center_x_corr"] = c["center_x"] - (c["center_y"] - y_ref) * dx_dy
@@ -649,7 +740,15 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 if i > 0 and j > 0:
                     comp = char_comps[i-1]
                     dist = abs(comp["center_x_corr"] - centroids[j-1])
-                    if dist > step_x * 0.55:
+                    
+                    is_outer_boundary = False
+                    if j-1 == 0 and comp["center_x_corr"] < centroids[0]:
+                        is_outer_boundary = True
+                    elif j-1 == 14 and comp["center_x_corr"] > centroids[14]:
+                        is_outer_boundary = True
+                        
+                    max_dist = step_x * 1.5 if is_outer_boundary else step_x * 0.90
+                    if dist > max_dist:
                         dist += 200.0
                     col_label = template[j-1]
                     
@@ -751,7 +850,15 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 if i > 0 and j > 0:
                     comp = char_comps[i-1]
                     dist = abs(comp["center_x_corr"] - row_centroids[j-1])
-                    if dist > step_x * 0.55:
+                    
+                    is_outer_boundary = False
+                    if j-1 == 0 and comp["center_x_corr"] < row_centroids[0]:
+                        is_outer_boundary = True
+                    elif j-1 == 14 and comp["center_x_corr"] > row_centroids[14]:
+                        is_outer_boundary = True
+                        
+                    max_dist = step_x * 1.5 if is_outer_boundary else step_x * 0.90
+                    if dist > max_dist:
                         dist += 200.0
                     col_label = template[j-1]
                     is_small = (comp["width"] < 15 and comp["height"] < 15) or (comp["width"] * comp["height"] < 120)
@@ -832,8 +939,8 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 continue
             for col_idx in nonblank_cols:
                 char_label = template[col_idx]
-                left_boundary_corr = (row_centroids[col_idx - 1] + row_centroids[col_idx]) / 2.0 if col_idx > 0 else row_centroids[col_idx] - step_x * 0.58
-                right_boundary_corr = (row_centroids[col_idx] + row_centroids[col_idx + 1]) / 2.0 if col_idx < 14 else row_centroids[col_idx] + step_x * 0.58
+                left_boundary_corr = (row_centroids[col_idx - 1] + row_centroids[col_idx]) / 2.0 if col_idx > 0 else row_centroids[col_idx] - step_x * 1.2
+                right_boundary_corr = (row_centroids[col_idx] + row_centroids[col_idx + 1]) / 2.0 if col_idx < 14 else row_centroids[col_idx] + step_x * 1.2
                 dist = abs(comp_center_corr - row_centroids[col_idx])
                 inside_cell = left_boundary_corr <= comp_center_corr <= right_boundary_corr
                 
@@ -858,17 +965,46 @@ def preprocess_scan(image_bytes: bytes) -> dict:
             dp_score = _score_bbox_with_cv2(binary, cleaned_binary, dp_bbox, template[col_idx]) if dp_bbox else None
             cell_score = _score_bbox_with_cv2(binary, cleaned_binary, cell_bbox, template[col_idx]) if cell_bbox else None
             
+            # Check individual scores of each component in cell_comps to find if one is much better than dp_comps
+            best_single_comp = None
+            best_single_score = -1.0
+            if len(cell_comps) > 1:
+                for idx_c, c in enumerate(cell_comps):
+                    # Position check to avoid stealing components from neighboring characters
+                    comp_cx = float(c.get("center_x_corr", c["center_x"]))
+                    dist_x = comp_cx - centroids[col_idx]
+                    is_outer_dev = False
+                    if col_idx == 0 and dist_x < 0:
+                        is_outer_dev = True
+                    elif col_idx == 14 and dist_x > 0:
+                        is_outer_dev = True
+                    allowed_dev = step_x * 1.0 if is_outer_dev else step_x * 0.40
+                    if abs(dist_x) > allowed_dev:
+                        continue
+                        
+                    c_bbox = _component_bbox([c])
+                    c_score = _score_bbox_with_cv2(binary, cleaned_binary, c_bbox, template[col_idx]) if c_bbox else None
+                    print(f"  DEBUG single_comp Col {col_idx} ({template[col_idx]}): comp_idx={idx_c}, bbox=[{c['x0']},{c['x1']}], score={c_score}")
+                    if c_score is not None and c_score > best_single_score:
+                        best_single_score = c_score
+                        best_single_comp = c
+            
+            use_cell = False
             if cell_score is not None and dp_score is not None:
-                # Use cell if its match score is better, or close enough to DP score,
-                # since cell grouping is physically more natural and includes all strokes.
                 use_cell = (cell_score >= dp_score - 0.03)
+                print(f"DEBUG score Col {col_idx} ({template[col_idx]}): cell_score={cell_score:.4f}, dp_score={dp_score:.4f}, use_cell={use_cell}")
             elif cell_score is not None:
                 use_cell = True
             else:
                 use_cell = False
-            
-            col_groups[col_idx] = cell_comps if use_cell else dp_comps
-            col_sources[col_idx] = "cell_split_stroke" if use_cell else "dp"
+                
+            if best_single_comp is not None and best_single_score > (dp_score or -1.0) + 0.01:
+                print(f"DEBUG substitute Col {col_idx} ({template[col_idx]}): use single best comp (score={best_single_score:.4f} > dp_score={dp_score or -1.0:.4f})")
+                col_groups[col_idx] = [best_single_comp]
+                col_sources[col_idx] = "cell_better_single"
+            else:
+                col_groups[col_idx] = cell_comps if use_cell else dp_comps
+                col_sources[col_idx] = "cell_split_stroke" if use_cell else "dp"
 
         # Pass 1: Gather candidate components for each column in this row
         row_col_comps = {}
@@ -997,15 +1133,9 @@ def preprocess_scan(image_bytes: bytes) -> dict:
                 if dp_col in col_indices:
                     best_col = dp_col
                 else:
-                    # Otherwise, find the column whose DP-assigned component is closest to this component.
-                    # Fall back to the column's global centroid if it has no DP-assigned component.
+                    # Assign to the column whose physical grid center is closest to this component.
                     def get_dist(col):
-                        dp_comp_idx = col_to_dp_comp.get(col)
-                        if dp_comp_idx is not None:
-                            dp_c = char_comps[dp_comp_idx]
-                            return abs(comp_cx - float(dp_c.get("center_x_corr", dp_c["center_x"])))
-                        else:
-                            return abs(comp_cx - centroids[col])
+                        return abs(comp_cx - centroids[col])
                     best_col = min(col_indices, key=get_dist)
                 if row_idx == 2:
                     print(f"  Conflict: Comp {i} (x0={comp['x0']}, cx={comp_cx:.1f}) claimed by {col_indices} ({[template[col] for col in col_indices]}). DP={dp_col} ({template[dp_col] if dp_col is not None else 'None'}). Selected={best_col} ({template[best_col]})")
@@ -1181,7 +1311,7 @@ def preprocess_scan(image_bytes: bytes) -> dict:
             guide_mask = binary_dilation(local_cleaned, structure=np.ones((5, 5), dtype=bool))
             char_mask = local_binary & guide_mask
             
-            stroke, stroke_meta = _stroke_from_mask(char_mask, force_profile="default", min_comp_len=3)
+            stroke, stroke_meta = _stroke_from_mask(char_mask, force_profile=None, min_comp_len=3)
             if not stroke:
                 final_segments.append({
                     "bbox": None,

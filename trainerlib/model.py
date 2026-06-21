@@ -124,6 +124,24 @@ class EncodedSample:
 _MODEL_CACHE: dict[str, tuple[float, TinyHandwritingModel, int, int, dict[str, Any]]] = {}
 _CACHED_BASE_EXEMPLARS: dict[str, list[list[float]]] | None = None
 
+_VOICED_TO_SEION = {
+    # ひらがな 濁音
+    'が': 'か', 'ぎ': 'き', 'ぐ': 'く', 'げ': 'け', 'ご': 'こ',
+    'ざ': 'さ', 'じ': 'し', 'ず': 'す', 'ぜ': 'せ', 'ぞ': 'そ',
+    'だ': 'た', 'ぢ': 'ち', 'づ': 'つ', 'で': 'て', 'ど': 'と',
+    'ば': 'は', 'び': 'ひ', 'ぶ': 'ふ', 'べ': 'へ', 'ぼ': 'ほ',
+    # ひらがな 半濁音
+    'ぱ': 'は', 'ぴ': 'ひ', 'ぷ': 'ふ', 'ぺ': 'へ', 'ぽ': 'ほ',
+    # カタカナ 濁音
+    'ガ': 'カ', 'ギ': 'キ', 'グ': 'ク', 'ゲ': 'ケ', 'ゴ': 'コ',
+    'ザ': 'サ', 'ジ': 'シ', 'ズ': 'ス', 'ゼ': 'セ', 'ゾ': 'ソ',
+    'ダ': 'タ', 'ヂ': 'チ', 'ヅ': 'ツ', 'デ': 'テ', 'ド': 'ト',
+    'バ': 'ハ', 'ビ': 'ヒ', 'ブ': 'フ', 'ベ': 'ヘ', 'ボ': 'ホ',
+    'ヴ': 'ウ',
+    # カタカナ 半濁音
+    'パ': 'ハ', 'ピ': 'ヒ', 'プ': 'フ', 'ペ': 'ヘ', 'ポ': 'ホ',
+}
+
 
 def _get_cached_base_exemplar(char: str) -> list[list[float]] | None:
     global _CACHED_BASE_EXEMPLARS
@@ -136,7 +154,13 @@ def _get_cached_base_exemplar(char: str) -> list[list[float]] | None:
                     _CACHED_BASE_EXEMPLARS = json.load(f)
         except Exception:
             pass
-    return _CACHED_BASE_EXEMPLARS.get(char)
+    res = _CACHED_BASE_EXEMPLARS.get(char)
+    if res is None:
+        seion = _VOICED_TO_SEION.get(char)
+        if seion:
+            res = _CACHED_BASE_EXEMPLARS.get(seion)
+    return res
+
 
 
 
@@ -1532,7 +1556,52 @@ def _resample_stroke(stroke, target_len):
     return new_stroke
 
 
-def _align_character_bbox(strokes_to_align, reference_strokes):
+def _merge_fragmented_strokes(strokes):
+    if not strokes:
+        return []
+    merged = []
+    for stroke in strokes:
+        if not stroke:
+            continue
+        if not merged:
+            merged.append(list(stroke))
+            continue
+        prev = merged[-1]
+        dx = stroke[0][0] - prev[-1][0]
+        dy = stroke[0][1] - prev[-1][1]
+        dist = hypot(dx, dy)
+        can_merge = dist <= 2.8
+        if can_merge and len(prev) >= 2 and len(stroke) >= 2:
+            pvx = prev[-1][0] - prev[-2][0]
+            pvy = prev[-1][1] - prev[-2][1]
+            nvx = stroke[1][0] - stroke[0][0]
+            nvy = stroke[1][1] - stroke[0][1]
+            plen = hypot(pvx, pvy)
+            nlen = hypot(nvx, nvy)
+            if plen > 1e-6 and nlen > 1e-6:
+                dot = (pvx * nvx + pvy * nvy) / (plen * nlen)
+                if dot < 0.10:
+                    can_merge = False
+        if can_merge:
+            bridge_w = (prev[-1][2] + stroke[0][2]) * 0.5
+            prev.append((stroke[0][0], stroke[0][1], bridge_w))
+            prev.extend(stroke[1:])
+        else:
+            merged.append(list(stroke))
+    cleaned = []
+    for stroke in merged:
+        if len(stroke) < 3:
+            continue
+        path_len = 0.0
+        for i in range(1, len(stroke)):
+            path_len += hypot(stroke[i][0] - stroke[i-1][0], stroke[i][1] - stroke[i-1][1])
+        if path_len < 2.0:
+            continue
+        cleaned.append(stroke)
+    return cleaned
+
+
+def _align_character_bbox(strokes_to_align, reference_strokes, blend=0.0):
     all_pts_ref = [p for stroke in reference_strokes for p in stroke]
     if not all_pts_ref:
         return strokes_to_align
@@ -1540,8 +1609,8 @@ def _align_character_bbox(strokes_to_align, reference_strokes):
     ys_ref = [p[1] for p in all_pts_ref]
     min_x_ref, max_x_ref = min(xs_ref), max(xs_ref)
     min_y_ref, max_y_ref = min(ys_ref), max(ys_ref)
-    w_ref = max_x_ref - min_x_ref
-    h_ref = max_y_ref - min_y_ref
+    w_ref = max(7.0, max_x_ref - min_x_ref)
+    h_ref = max(7.0, max_y_ref - min_y_ref)
 
     all_pts_align = [p for stroke in strokes_to_align for p in stroke]
     if not all_pts_align:
@@ -1550,17 +1619,28 @@ def _align_character_bbox(strokes_to_align, reference_strokes):
     ys_align = [p[1] for p in all_pts_align]
     min_x_align, max_x_align = min(xs_align), max(xs_align)
     min_y_align, max_y_align = min(ys_align), max(ys_align)
-    w_align = max_x_align - min_x_align
-    h_align = max_y_align - min_y_align
+    w_align = max(7.0, max_x_align - min_x_align)
+    h_align = max(7.0, max_y_align - min_y_align)
+
+    # Calculate scaling factors
+    fit_x = w_ref / w_align
+    fit_y = h_ref / h_align
+    iso = min(fit_x, fit_y)
+    
+    scale_x = iso * (1.0 - blend) + fit_x * blend
+    scale_y = iso * (1.0 - blend) + fit_y * blend
+
+    cx_ref = min_x_ref + w_ref * 0.5
+    cy_ref = min_y_ref + h_ref * 0.5
+    cx_align = min_x_align + w_align * 0.5
+    cy_align = min_y_align + h_align * 0.5
 
     aligned_strokes = []
     for stroke in strokes_to_align:
         aligned_stroke = []
         for x, y, w in stroke:
-            nx = (x - min_x_align) / max(1e-6, w_align)
-            ny = (y - min_y_align) / max(1e-6, h_align)
-            rx = min_x_ref + nx * w_ref
-            ry = min_y_ref + ny * h_ref
+            rx = cx_ref + (x - cx_align) * scale_x
+            ry = cy_ref + (y - cy_align) * scale_y
             aligned_stroke.append((rx, ry, w))
         aligned_strokes.append(aligned_stroke)
     return aligned_strokes
@@ -1601,24 +1681,66 @@ def _blend_widths(strokes_dest, strokes_src, corr_width):
     return dest_strokes_new
 
 
-def _morph_strokes(strokes_u, strokes_b, correction, strokes_m=None):
+def _smooth_stroke_points(stroke: list[tuple[float, float, float]], iterations: int = 2) -> list[tuple[float, float, float]]:
+    if len(stroke) < 3:
+        return list(stroke)
+    out = list(stroke)
+    for _ in range(iterations):
+        if len(out) < 3:
+            break
+        nxt = [out[0]]
+        for i in range(len(out) - 1):
+            x0, y0, w0 = out[i]
+            x1, y1, w1 = out[i + 1]
+            q = (0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1, 0.75 * w0 + 0.25 * w1)
+            r = (0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1, 0.25 * w0 + 0.75 * w1)
+            nxt.append(q)
+            nxt.append(r)
+        nxt.append(out[-1])
+        out = nxt
+    return out
+
+
+def _morph_strokes(strokes_u, strokes_b, correction, strokes_m=None, char=None):
     if not strokes_u:
         return strokes_b
     if not strokes_b:
         return strokes_u
     
-    corr_shape = min(1.0, max(0.0, correction * 0.8 + 0.38))
-    corr_centroid = min(1.0, max(0.0, correction * 0.6))
+    # ユーザーの全ストロークを事前に滑らかにし、ノイズや細かい揺れ（手ブレ）を除去
+    # 改修：ひらがなは1回平滑化、カタカナ・漢字・ラテンは0回（平滑化なし）でシャープな特徴を保護
+    iter_smooth = 0
+    if char is not None:
+        if _is_hiragana_char(char):
+            iter_smooth = 1
+    else:
+        iter_smooth = 1
+        
+    if iter_smooth > 0:
+        strokes_u = [_smooth_stroke_points(su, iterations=iter_smooth) for su in strokes_u]
+    
+    # ユーザーの滑らかな「癖（骨格・ストローク配置）」をより強く反映するため、ベース形状のブレンド係数を下げる
+    corr_shape = min(1.0, max(0.0, correction * 0.60 + 0.08))
+    corr_centroid = min(1.0, max(0.0, correction * 0.40))
     corr_width = min(1.0, max(0.0, correction * 0.5))
+
+    align_blend = 0.0
+    if char is not None:
+        if _is_katakana_char(char) or _is_kanji_char(char):
+            align_blend = 0.0
+        elif _is_latin_char(char):
+            align_blend = 0.05
+    else:
+        align_blend = 0.0
 
     if len(strokes_u) != len(strokes_b):
         if correction > 0.5:
-            strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
+            strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u, blend=align_blend)
             return _blend_widths(strokes_b_aligned, strokes_u, corr_width)
         return strokes_u
 
-    strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u)
-    strokes_m_aligned = _align_character_bbox(strokes_m, strokes_u) if strokes_m else None
+    strokes_b_aligned = _align_character_bbox(strokes_b, strokes_u, blend=align_blend)
+    strokes_m_aligned = _align_character_bbox(strokes_m, strokes_u, blend=align_blend) if strokes_m else None
     n = len(strokes_u)
 
     centroids_u = []
@@ -1750,6 +1872,11 @@ def _trajectory_from_exemplar(
     raw_jitter_scale = max(0.82, min(1.20, float(style_cfg.get("jitter_scale", 1.0)))) if style_cfg else 1.0
 
     for char in text:
+        if char == "\n":
+            y_offset += 38.0
+            x_offset = 24.0
+            continue
+            
         is_katakana = _is_katakana_char(char)
         is_latin = _is_latin_char(char)
         is_kanji = _is_kanji_char(char)
@@ -1757,8 +1884,8 @@ def _trajectory_from_exemplar(
         if is_latin:
             char_correction = max(0.92, correction)
         elif is_katakana:
-            # カタカナの崩れを抑制するため、基本データセットを強めに参照 (最低 82%)
-            char_correction = max(0.82, correction)
+            # カタカナの崩れを抑制しつつ、ユーザーの癖を反映しやすくするため最低補正率を 72% に緩和
+            char_correction = max(0.72, correction)
         elif is_kanji:
             # 漢字に手書きの癖を導入しやすくするため、補正率を 75% に抑制
             char_correction = correction * 0.75
@@ -1801,17 +1928,31 @@ def _trajectory_from_exemplar(
         else:
             if isinstance(base_char_exemplars_text, dict):
                 base_bucket = base_char_exemplars_text.get(char)
+                if base_bucket is None:
+                    seion = _VOICED_TO_SEION.get(char)
+                    if seion:
+                        base_bucket = base_char_exemplars_text.get(seion)
             if base_bucket is None and isinstance(base_char_exemplars, dict):
                 char_id = _char_token(char, vocab_size)
                 base_bucket = base_char_exemplars.get(str(char_id))
+                if base_bucket is None:
+                    seion = _VOICED_TO_SEION.get(char)
+                    if seion:
+                        seion_id = _char_token(seion, vocab_size)
+                        base_bucket = base_char_exemplars.get(str(seion_id))
 
         seq_base = None
         if base_bucket:
             seq_base = _pick_best_exemplar_sequence(base_bucket, rng, trials=28)
 
         target_strokes = _STANDARD_STROKE_COUNTS.get(char)
+        if target_strokes is None:
+            seion = _VOICED_TO_SEION.get(char)
+            if seion:
+                target_strokes = _STANDARD_STROKE_COUNTS.get(seion)
         if target_strokes is None and seq_base:
             target_strokes = len(_seq_to_strokes(seq_base))
+
 
         seq_user = None
         if user_bucket:
@@ -1843,41 +1984,52 @@ def _trajectory_from_exemplar(
         strokes_m = _seq_to_strokes(seq_model) if seq_model else None
 
         seq = None
+        is_raw_user = False
         if seq_user and seq_base and char_correction > 0.0:
-            strokes_u = _seq_to_strokes(seq_user)
-            strokes_b = _seq_to_strokes(seq_base)
+            strokes_u = _merge_fragmented_strokes(_seq_to_strokes(seq_user))
+            strokes_b = _merge_fragmented_strokes(_seq_to_strokes(seq_base))
             # Only morph when stroke counts match - mismatched counts produce garbled shapes
             if len(strokes_u) == len(strokes_b):
-                morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m)
+                morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m, char=char)
                 seq = _strokes_to_seq(morphed_strokes)
             else:
                 # Stroke counts differ: try to recover pen lifts from user data geometry,
                 # then morph if stroke counts now match
                 repaired_user = _infer_pen_lifts_from_geometry(seq_user, len(strokes_b))
-                strokes_u_repaired = _seq_to_strokes(repaired_user)
+                strokes_u_repaired = _merge_fragmented_strokes(_seq_to_strokes(repaired_user))
                 if len(strokes_u_repaired) == len(strokes_b):
-                    morphed_strokes = _morph_strokes(strokes_u_repaired, strokes_b, char_correction, strokes_m)
+                    morphed_strokes = _morph_strokes(strokes_u_repaired, strokes_b, char_correction, strokes_m, char=char)
                     seq = _strokes_to_seq(morphed_strokes)
                 else:
                     # Still can't match - morph using the unmatched-length morph logic
-                    morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m)
+                    morphed_strokes = _morph_strokes(strokes_u, strokes_b, char_correction, strokes_m, char=char)
                     seq = _strokes_to_seq(morphed_strokes)
+                    if char_correction <= 0.5:
+                        is_raw_user = True
         elif seq_user:
             # User-only: try to recover pen lifts if the character should have multiple strokes
-            strokes_u = _seq_to_strokes(seq_user)
+            strokes_u = _merge_fragmented_strokes(_seq_to_strokes(seq_user))
             expected_strokes = _STANDARD_STROKE_COUNTS.get(char, 2)
             if len(strokes_u) < expected_strokes and (_is_hiragana_char(char) or _is_katakana_char(char)):
                 # For fewer-stroke user data on hiragana/katakana, attempt geometric pen lift inference
                 repaired = _infer_pen_lifts_from_geometry(seq_user, expected_strokes)
-                strokes_repaired = _seq_to_strokes(repaired)
+                strokes_repaired = _merge_fragmented_strokes(_seq_to_strokes(repaired))
                 if len(strokes_repaired) > len(strokes_u):
                     seq = repaired
                 else:
                     seq = seq_user
             else:
                 seq = seq_user
+            is_raw_user = True
         else:
             seq = seq_base
+
+        # すでに手書き生座標を使用している場合は、アフィン癖（傾き・回転）が座標に織り込み済みなため二重アフィン適用を抑止
+        if is_raw_user:
+            c_rot_bias_deg = 0.0
+            c_shear_x = 0.0
+            c_shear_y = 0.0
+            c_jitter_scale = 1.0
 
         if not isinstance(seq, list) or len(seq) < 8:
             return []
@@ -1905,8 +2057,13 @@ def _trajectory_from_exemplar(
                 pen = "up"
             scaled_w = float(row[3])
             if seq_user is None:
-                scaled_w *= user_width_ratio
-            width = int(round(max(0.2, min(1.5, scaled_w * width_scale_boosted)) * 4.0))
+                if is_kanji:
+                    blend_ratio = user_width_ratio * 0.15 + 1.0 * 0.85
+                    scaled_w *= blend_ratio
+                else:
+                    blend_ratio = user_width_ratio * 0.5 + 1.0 * 0.5
+                    scaled_w *= blend_ratio
+            width = int(round(max(0.2, min(1.5, scaled_w * 1.15)) * 4.0))
             local.append((lx, ly, pen, max(1, min(5, width))))
 
         down_local = [(p[0], p[1]) for p in local if p[2] == "down"]
@@ -1931,12 +2088,28 @@ def _trajectory_from_exemplar(
             base_target_w = (17.0 + rng.uniform(-0.6, 1.2)) * c_scale_x_bias
             base_target_h = (29.0 + rng.uniform(-1.0, 1.0)) * c_scale_y_bias
 
-        # Scale uniformly to fit inside target box, preserving the raw aspect ratio
-        scale_val = min(base_target_w / span_x, base_target_h / span_y)
-        scale_x = max(0.01, min(2.4, scale_val))
-        scale_y = max(0.01, min(2.8, scale_val))
+        # アスペクト比のスケーリング決定
+        # ユーザーデータが存在しない（ベース形状のみの）文字に対してのみ、
+        # ユーザーの文字プロポーション（扁平さ・細長さ）の癖を 35% 分ブレンド適用（緩やかなアスペクト比の伝播）。
+        # ユーザーデータが存在する文字はそのまま等方性スケーリングを維持して崩れを防ぐ。
+        fit_x = base_target_w / span_x
+        fit_y = base_target_h / span_y
+        iso = min(fit_x, fit_y)
         
+        if seq_user is None:
+            aspect_blend = 0.35
+            scale_x = max(0.01, min(2.4, iso * (1.0 - aspect_blend) + fit_x * aspect_blend))
+            scale_y = max(0.01, min(2.8, iso * (1.0 - aspect_blend) + fit_y * aspect_blend))
+        else:
+            scale_x = max(0.01, min(2.4, iso))
+            scale_y = max(0.01, min(2.8, iso))
+        
+        # アスペクト比が極端に横長な文字（一、ー、など）の場合、横幅に巨大化するのを防ぐため補正を入れる
+        if span_y < span_x * 0.25:
+            scale_x *= 0.62
+
         char_w = span_x * scale_x
+
         char_h = span_y * scale_y
         base_y = y_offset + (base_target_h - char_h) * 0.5
 
@@ -2294,3 +2467,4 @@ def generate_trajectory(text: str, style_seed: str, base_model_path: str | None 
             return best
         return []
     return _legacy_generate_trajectory(text, style_seed)
+

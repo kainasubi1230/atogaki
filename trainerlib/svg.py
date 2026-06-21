@@ -152,7 +152,7 @@ def text_to_svg_english(text: str, watermark_text: str) -> str:
     )
 
 
-def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
+def trajectory_to_svg(trajectory: list[dict], watermark_text: str, original_text: str | None = None) -> str:
     if not trajectory:
         return (
             "<svg xmlns='http://www.w3.org/2000/svg' width='800' height='160'>"
@@ -167,7 +167,24 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
     max_y = max(ys)
     pad_x = 20
     pad_y = 18
-    width = max(120.0, (max_x - min_x) + pad_x * 2)
+
+    # 濁点・半濁点付き文字の定義
+    _DAKUTEN_CHARS = set("がぎぐげござじずぜぞだぢづでどばびぶべぼガギグゲゴザジズゼゾダヂヅデドバビブベボヴ")
+    _HANDAKUTEN_CHARS = set("ぱぴぷぺぽパピプペポ")
+
+    # 最後の文字が濁点・半濁点付きの場合、はみ出しを防ぐため幅を余分に広げる
+    has_last_dakuten = False
+    if original_text and len(original_text) > 0:
+        last_char = original_text[-1]
+        if last_char in _DAKUTEN_CHARS or last_char in _HANDAKUTEN_CHARS:
+            has_last_dakuten = True
+            
+    pad_right = pad_x
+    if has_last_dakuten:
+        char_h = max_y - min_y
+        pad_right += max(4.0, char_h * 0.25)
+
+    width = max(120.0, (max_x - min_x) + pad_x + pad_right)
     height = max(96.0, (max_y - min_y) + pad_y * 2 + 20)
 
     # 1. 軌跡からストロークを抽出（座標と太さ width を取得）
@@ -219,16 +236,14 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
         def get_fade_at(dist_from_start: float) -> float:
             if total_len <= 0.01:
                 return 1.0
-            d_from_start = dist_from_start
             d_from_end = total_len - dist_from_start
             
-            f_start = 1.0 if taper_start <= 0 else min(1.0, d_from_start / taper_start)
+            # 画の始まりはフェード（細くする）させず、最初からしっかり太く入る
             f_end = 1.0 if taper_end <= 0 else min(1.0, d_from_end / taper_end)
             
             # Smoothstep による滑らかな非線形フェード (3t^2 - 2t^3)
-            f_start = 3 * (f_start ** 2) - 2 * (f_start ** 3)
             f_end = 3 * (f_end ** 2) - 2 * (f_end ** 3)
-            return f_start * f_end
+            return f_end
 
         # n == 2 の場合 (単純な直線)
         if n == 2:
@@ -240,9 +255,9 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * dists[1]))
             fade = get_fade_at(dists[1] / 2.0)
             
-            # 鉛筆/極細ペン風の太さ調整 (0.72倍縮小スケーリング)
-            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
-            w_eff = max(0.45, min(1.35, w_eff))
+            # 鉛筆/極細ペン風の太さ調整 (0.58倍縮小スケーリングでシャーペン風に)
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.58
+            w_eff = max(0.32, min(1.10, w_eff))
             
             # 速度とかすれ（フェード）をカップリングさせた自然なインク濃淡
             opacity_eff = (0.35 + 0.55 * fade) * vel_factor
@@ -266,8 +281,8 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
             fade = get_fade_at(cum_dists[1] / 2.0)
             
-            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
-            w_eff = max(0.45, min(1.35, w_eff))
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.58
+            w_eff = max(0.32, min(1.10, w_eff))
             
             opacity_eff = (0.35 + 0.55 * fade) * vel_factor
             opacity_eff = max(0.38, min(0.93, opacity_eff))
@@ -293,8 +308,8 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
                 vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
                 fade = get_fade_at(cum_dists[idx])
                 
-                w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
-                w_eff = max(0.45, min(1.35, w_eff))
+                w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.58
+                w_eff = max(0.32, min(1.10, w_eff))
                 
                 opacity_eff = (0.35 + 0.55 * fade) * vel_factor
                 opacity_eff = max(0.38, min(0.93, opacity_eff))
@@ -316,8 +331,8 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
             vel_factor = max(0.65, min(1.2, 1.2 - 0.12 * d))
             fade = get_fade_at(total_len - dists[-1] / 2.0)
             
-            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.72
-            w_eff = max(0.45, min(1.35, w_eff))
+            w_eff = w_base * vel_factor * (0.50 + 0.50 * fade) * 0.58
+            w_eff = max(0.32, min(1.10, w_eff))
             
             opacity_eff = (0.35 + 0.55 * fade) * vel_factor
             opacity_eff = max(0.38, min(0.93, opacity_eff))
@@ -327,6 +342,71 @@ def trajectory_to_svg(trajectory: list[dict], watermark_text: str) -> str:
                 f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{w_eff:.2f}' "
                 f"stroke-opacity='{opacity_eff:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
             )
+
+    # 濁点・半濁点の描画パスを追加
+    if original_text:
+        # 改行やスペースを除去し、実際に描画される文字のみを対象にする
+        render_chars = [c for c in original_text if c != "\n" and not c.isspace()]
+        
+        down_xs = [float(p.get("x", 0.0)) for p in trajectory if p.get("pen_state") == "down"]
+        if not down_xs:
+            down_xs = xs
+        char_min_x = min(down_xs)
+        char_max_x = max(down_xs)
+        char_total_w = char_max_x - char_min_x
+        
+        n_chars = len(render_chars)
+        if n_chars > 0 and char_total_w > 0:
+            char_w_step = char_total_w / n_chars
+            char_h = max_y - min_y
+            
+            stroke_w = max(1.1, char_h * 0.055)
+            mark_size = max(4.0, char_h * 0.20)
+            
+            for i, char in enumerate(render_chars):
+                char_l = char_min_x + i * char_w_step - min_x + pad_x
+                char_r = char_min_x + (i + 1) * char_w_step - min_x + pad_x
+                char_w = char_r - char_l
+                
+                base_x = char_r - char_w * 0.16
+                base_y = pad_y + char_h * 0.02
+                opacity_val = 0.90
+                
+                if char in _DAKUTEN_CHARS:
+                    x1 = base_x
+                    y1 = base_y + mark_size * 0.15
+                    x2 = base_x + mark_size * 0.28
+                    y2 = base_y + mark_size * 0.45
+                    
+                    x3 = base_x + mark_size * 0.33
+                    y3 = base_y + mark_size * 0.05
+                    x4 = base_x + mark_size * 0.61
+                    y4 = base_y + mark_size * 0.35
+                    
+                    d_path = f"M{x1:.2f},{y1:.2f} L{x2:.2f},{y2:.2f} M{x3:.2f},{y3:.2f} L{x4:.2f},{y4:.2f}"
+                    svg_paths.append(
+                        f"<path d='{d_path}' stroke='#1a1a1a' fill='none' stroke-width='{stroke_w:.2f}' "
+                        f"stroke-opacity='{opacity_val:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+                    )
+                elif char in _HANDAKUTEN_CHARS:
+                    cx = base_x + mark_size * 0.3
+                    cy = base_y + mark_size * 0.25
+                    r = mark_size * 0.22
+                    
+                    import math
+                    pts = []
+                    for idx_c in range(8):
+                        ang = (idx_c * 2.0 * math.pi) / 8.0
+                        px = cx + r * math.cos(ang)
+                        py = cy + r * math.sin(ang)
+                        pts.append(f"{'M' if idx_c == 0 else 'L'}{px:.2f},{py:.2f}")
+                    pts.append("Z")
+                    d_circle = " ".join(pts)
+                    svg_paths.append(
+                        f"<path d='{d_circle}' stroke='#1a1a1a' fill='none' stroke-width='{stroke_w:.2f}' "
+                        f"stroke-opacity='{opacity_val:.2f}' stroke-linecap='round' stroke-linejoin='round'/>"
+                    )
+
 
     paths_joined = "\n".join(svg_paths)
     return (

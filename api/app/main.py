@@ -153,9 +153,50 @@ app.include_router(analyze_scan.router)
 
 
 
+def _download_asset_if_missing(file_path: Path, url: str) -> None:
+    import logging
+    import urllib.request
+    logger = logging.getLogger(__name__)
+
+    if file_path.exists():
+        return
+    logger.info(f"Asset {file_path} is missing. Downloading from {url}...")
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        urllib.request.urlretrieve(url, str(file_path))
+        logger.info(f"Successfully downloaded {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to download asset {file_path} from {url}: {e}")
+        # Fallback to local .bak files if they exist (for development/testing convenience)
+        bak_path = file_path.with_name(file_path.name + ".bak")
+        if bak_path.exists():
+            import shutil
+            logger.info(f"Fallback: Copying from backup file {bak_path} to {file_path}")
+            shutil.copy(str(bak_path), str(file_path))
+            return
+        raise RuntimeError(f"Missing required asset: {file_path}. Failed download: {e}")
+
+
 @app.on_event("startup")
 def on_startup() -> None:
+    import os
     Base.metadata.create_all(bind=engine)
+
+    DEFAULT_BASE_MODEL_URL = "https://storage.googleapis.com/atogaki-public-assets/models/base_model.pt"
+    DEFAULT_EXEMPLARS_URL = "https://storage.googleapis.com/atogaki-public-assets/base_hiragana_katakana_exemplars.json"
+
+    # Download base model if missing
+    model_path = Path(settings.base_model_path)
+    model_url = os.getenv("BASE_MODEL_URL", DEFAULT_BASE_MODEL_URL)
+    _download_asset_if_missing(model_path, model_url)
+
+    # Download base exemplars if missing
+    exemplars_path = Path("/app/storage/base_hiragana_katakana_exemplars.json")
+    if not Path("/app/storage").exists():
+        exemplars_path = Path("storage/base_hiragana_katakana_exemplars.json")
+    exemplars_url = os.getenv("BASE_EXEMPLARS_URL", DEFAULT_EXEMPLARS_URL)
+    _download_asset_if_missing(exemplars_path, exemplars_url)
+
 
 
 def _get_shared_style(db: Session) -> StyleAdapter:
@@ -266,6 +307,17 @@ def _is_katakana_text(text: str) -> bool:
             continue
         return False
     return has_katakana
+
+
+def _wrap_text(text: str, max_chars: int = 16) -> str:
+    lines = []
+    for line in text.splitlines():
+        if not line:
+            lines.append("")
+            continue
+        for chunk in [line[i:i+max_chars] for i in range(0, len(line), max_chars)]:
+            lines.append(chunk)
+    return "\n".join(lines)
 
 
 def _is_japanese_text(text: str) -> bool:
@@ -885,7 +937,7 @@ def _sequence_step_jump_penalty(seq: list[list[float]]) -> tuple[int, int]:
 
 
 def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") -> float:
-    if not isinstance(seq, list) or len(seq) < 8:
+    if not isinstance(seq, list) or len(seq) < 4:
         return float("-inf")
     big_any, big_down = _sequence_step_jump_penalty(seq)
     # Exclude broken trajectories with huge jumps.
@@ -901,7 +953,7 @@ def _char_sequence_quality(seq: list[list[float]], ch: str, source: str = "") ->
     if not strokes:
         return float("-inf")
     all_pts = [(x, y) for stroke in strokes for (x, y, _w) in stroke]
-    if len(all_pts) < 10:
+    if len(all_pts) < 4:
         return float("-inf")
     stroke_count = len(strokes)
     point_count = len(all_pts)
@@ -1538,6 +1590,7 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
     render_nonce = uuid.uuid4().hex
 
     stroke_paths: list[tuple[str, float]] = []
+    extra_svgs: list[str] = []
     for row, line in enumerate(lines):
         line_balance = _kana_line_balance(line)
         x = pad_x
@@ -1808,7 +1861,11 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                 )
                 size_comp = fill * aspect_comp * density_comp * char_bias * optical_comp
                 # Mild anisotropic normalization reduces per-character size gaps.
-                blend = 0.36
+                # Katakana must preserve exact angles; anisotropic stretch breaks them.
+                if _is_katakana_char(ch):
+                    blend = 0.0
+                else:
+                    blend = 0.36
             elif _is_kanji_char(ch):
                 kanji_size_seed = _stable_int_seed(
                     f"runtime-kanji-size:v1:{render_nonce}:{text}:{row}:{col}:{ch}"
@@ -1844,7 +1901,14 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
             for stroke_idx, stroke in enumerate(draw_strokes):
                 raw_xy = [(px, py) for (px, py, _w) in stroke]
                 if _is_kana_char(ch):
-                    sampled_xy = _resample_polyline(raw_xy, spacing=1.32)
+                    if _is_hiragana_char(ch):
+                        # 平仮名は筆脈をつなげ、滑らかさを表現するため2回平滑化
+                        smooth_iter = 2
+                    else:
+                        # 片仮名はシャープな折れを残しつつ、ブレのみを除去するため1回平滑化
+                        smooth_iter = 1
+                    smoothed_xy = _chaikin_smooth(raw_xy, iterations=smooth_iter)
+                    sampled_xy = _resample_polyline(smoothed_xy, spacing=1.32)
                 elif _is_latin_char(ch):
                     # Higher smoothing to remove pixelation staircases and wobbly artifacts
                     smooth_iter = 3
@@ -1954,6 +2018,45 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
                         stroke_paths.append((" ".join(seg_parts), base_sw))
                 else:
                     stroke_paths.append((" ".join(seg_parts), base_sw))
+
+            # 濁点・半濁点の描画を追加
+            _DAKUTEN_CHARS = set("がぎぐげござじずぜぞだぢづでどばびぶべぼガギグゲゴザジズゼゾダヂヅデドバビブベボヴ")
+            _HANDAKUTEN_CHARS = set("ぱぴぷぺぽパピプペポ")
+
+            mark_size = max(4.0, draw_h * 0.20)
+            stroke_w = max(1.1, draw_h * 0.055)
+            base_x = off_x + draw_w - draw_w * 0.16
+            base_y = off_y + draw_h * 0.02
+
+            if ch in _DAKUTEN_CHARS:
+                x1 = base_x
+                y1 = base_y + mark_size * 0.15
+                x2 = base_x + mark_size * 0.28
+                y2 = base_y + mark_size * 0.45
+                
+                x3 = base_x + mark_size * 0.33
+                y3 = base_y + mark_size * 0.05
+                x4 = base_x + mark_size * 0.61
+                y4 = base_y + mark_size * 0.35
+                
+                stroke_paths.append((f"M{x1:.2f},{y1:.2f} L{x2:.2f},{y2:.2f}", stroke_w))
+                stroke_paths.append((f"M{x3:.2f},{y3:.2f} L{x4:.2f},{y4:.2f}", stroke_w))
+            elif ch in _HANDAKUTEN_CHARS:
+                cx = base_x + mark_size * 0.3
+                cy = base_y + mark_size * 0.25
+                r = mark_size * 0.22
+                
+                # Render circle as an octagon path so frontend parser picks it up as a path
+                pts = []
+                for idx_c in range(8):
+                    ang = (idx_c * 2.0 * math.pi) / 8.0
+                    px = cx + r * math.cos(ang)
+                    py = cy + r * math.sin(ang)
+                    pts.append(f"{'M' if idx_c == 0 else 'L'}{px:.2f},{py:.2f}")
+                pts.append("Z")
+                d_circle = " ".join(pts)
+                stroke_paths.append((d_circle, stroke_w))
+
             x += advance_w
 
     watermark_y = height - 14
@@ -1962,10 +2065,12 @@ def _runtime_kana_image_svg(text: str, watermark_text: str) -> str:
         "stroke-linecap='round' stroke-linejoin='round'/>"
         for (d, sw) in stroke_paths
     )
+    extra_svg_str = "".join(extra_svgs)
     return (
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}'>"
         "<rect width='100%' height='100%' fill='white'/>"
         f"{path_svg}"
+        f"{extra_svg_str}"
         f"<text x='12' y='{watermark_y}' fill='#c62828' font-size='14'>{WATERMARK_TEXT}</text>"
         "</svg>"
     )
@@ -2343,6 +2448,9 @@ def get_style_coverage(style_id: int, user: User = Depends(get_current_user), db
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(payload: GenerateRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> GenerateResponse:
+    import unicodedata
+    payload.text = unicodedata.normalize("NFC", payload.text)
+    payload.text = _wrap_text(payload.text, 16)
     if user.id != payload.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_mismatch")
     if payload.purpose != "accessibility":
@@ -2439,7 +2547,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         # dataset renderer when the learned path cannot cover the text.
         trajectory = _learned_style_trajectory(payload.text)
         if trajectory:
-            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT, original_text=payload.text)
         else:
             trajectory = []
             svg = _runtime_kana_image_svg(payload.text, WATERMARK_TEXT)
@@ -2471,7 +2579,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             trajectory = []
             svg = _fallback_svg(payload.text)
         else:
-            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT, original_text=payload.text)
     elif use_runtime_latin:
         trajectory = []
         if style is not None and style.adapter_key and style.status == "ready" and (not style.disabled):
@@ -2488,7 +2596,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
         # We directly fall back to the clean, smoothed EMNIST dataset.
         pass
         if trajectory and not settings.readable_text_svg:
-            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT, original_text=payload.text)
         else:
             trajectory = []
             svg = _runtime_kana_image_svg(payload.text, WATERMARK_TEXT)
@@ -2524,7 +2632,7 @@ def generate(payload: GenerateRequest, user: User = Depends(get_current_user), d
             trajectory = []
             svg = _fallback_svg(payload.text)
         else:
-            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT)
+            svg = trajectory_to_svg(trajectory, WATERMARK_TEXT, original_text=payload.text)
 
     storage = get_storage()
     output_svg_key = f"outputs/u{user.id}/{uuid.uuid4().hex}.svg"

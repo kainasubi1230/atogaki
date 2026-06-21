@@ -1069,9 +1069,8 @@ def _image_to_sequence(
     for path in paths:
         # Keep points proportional to each component size.
         comp_keep = max(2, int(round((len(path) / max(1, raw_len)) * keep_total)))
-        sampled_i = _resample_path(path, comp_keep)
         if profile == "kanji_fine":
-            plen = len(sampled_i)
+            plen = comp_keep
             if plen < 16:
                 passes, blend, stroke_w = 1, 0.30, 0.70
             elif plen < 36:
@@ -1088,7 +1087,7 @@ def _image_to_sequence(
             passes, blend, stroke_w = 3, 0.65, 0.72
         # After Catmull-Rom expansion, re-sample back to comp_keep points so
         # the total budget is respected while keeping the smooth curve shape.
-        spline_raw = _smooth_polyline(sampled_i, passes=passes, blend=blend)
+        spline_raw = _smooth_polyline(path, passes=passes, blend=blend)
         # Arc-length re-sample on float points (reuse the integer version logic).
         sampled_f: list[tuple[float, float]] = spline_raw
         target_pts = comp_keep
